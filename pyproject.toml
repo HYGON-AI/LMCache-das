@@ -1,0 +1,26 @@
+[build-system]
+requires = [
+    "ninja",
+    "packaging>=24.2",
+    "setuptools>=77.0.3,<81.0.0",
+    "torch",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lmcache-hcu"
+authors = [{name = "LMCache-HCU Maintainers"}]
+license = "Apache-2.0"
+readme = "README.md"
+description = "HCU/Hygon overlay and patch package for LMCache v0.3.13."
+requires-python = ">=3.10,<3.14"
+dynamic = ["version"]
+
+[project.scripts]
+lmcache-hcu-apply-patches = "lmcache_hcu.integration.patch.apply_patch:main"
+lmcache-hcu-info = "lmcache_hcu.env:main"
+
+[tool.setuptools.packages.find]
+where = [""]
+include = ["lmcache_hcu", "lmcache_hcu*"]

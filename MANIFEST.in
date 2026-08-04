@@ -1,0 +1,4 @@
+include README.md
+include pyproject.toml
+recursive-include csrc pybind_hip.cpp mem_kernels.hip mem_kernels_hip.cuh
+recursive-include lmcache_hcu *.py
