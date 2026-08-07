@@ -5,10 +5,6 @@
 
 Use the following container image for this example:
 
-```text
-docker pull harbor.sourcefind.cn:5443/dcu/admin/base/custom:vllm-0.15.1-ubuntu22.04-dtk26.04-py3.10-fix-scheduler
-```
-
 ## Install LMCache-HCU
 
 Before running this example, install baseline LMCache, install LMCache-HCU, apply the source patches, and verify runtime patch activation by following [`../README.md`](../README.md).
