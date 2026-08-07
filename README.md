@@ -1,10 +1,17 @@
-This repository is based on the following fixed upstream baseline:
-Upstream project: LMCache
-Upstream repository: GitHub - LMCache/LMCache: LMCache is a KV cache management layer for LLM inference.
-Upstream branch: main
-Upstream tag: v0.3.13
-Upstream commit: fc031d471a566edb6d49a86c9116cc23cfb04111
-Upstream license: Apache-2.0
+This repository is based on the following fixed upstream baseline:<br>
+ 
+ • Upstream project: LMCache<br>
+ 
+ • Upstream repository: GitHub - LMCache/LMCache: LMCache is a KV cache management layer for LLM inference.<br>
+ 
+ • Upstream branch: main<br>
+ 
+ • Upstream tag: v0.3.13<br>
+ 
+ • Upstream commit: fc031d471a566edb6d49a86c9116cc23cfb04111<br>
+ 
+ • Upstream license: Apache-2.0<br>
+ 
 HCU adaptations, modifications, and original contributions by Hygon Information Technology Co., Ltd. are licensed under the Apache License, Version 2.0.
 Modified by Hygon Information Technology Co., Ltd.
 Original copyright notices and license terms from the upstream LMCache project are retained. See LICENSE and Third-Party Notices for details.
