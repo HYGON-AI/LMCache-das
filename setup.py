@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import os
 import shutil
@@ -50,9 +51,16 @@ def _write_build_info() -> None:
     )
 
 
+def _build_date() -> str:
+    return datetime.now().strftime("%y%m%d%H%M")
+
+
 def _version() -> str:
+    build_date = _build_date()
     suffix = _git_sha()
-    return "0.3.13+hcu" if suffix == "unknown" else f"0.3.13+hcu.{suffix}"
+    if suffix == "unknown":
+        return f"0.3.13+hcu.{build_date}"
+    return f"0.3.13+hcu.{build_date}.{suffix}"
 
 
 def _flag_cxx_abi() -> str:

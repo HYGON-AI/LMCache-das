@@ -125,6 +125,28 @@ class BasePatcher:
         shutil.copy2(path, backup)
         return backup
 
+    @staticmethod
+    def backup_sort_key(path: Path) -> tuple[int, str]:
+        try:
+            return (int(path.name.rsplit(".bak.", 1)[1]), path.name)
+        except (IndexError, ValueError):
+            return (0, path.name)
+
+    @classmethod
+    def find_earliest_backup(cls, path: Path) -> Path | None:
+        backups = sorted(path.parent.glob(f"{path.name}.bak.*"), key=cls.backup_sort_key)
+        return backups[0] if backups else None
+
+    @classmethod
+    def restore_earliest_backup(cls, path: Path) -> bool:
+        backup = cls.find_earliest_backup(path)
+        if backup is None:
+            logger.warning("No backup found for %s; skip restore", path)
+            return False
+        shutil.copy2(backup, path)
+        logger.info("Restored %s from earliest backup %s", path, backup)
+        return True
+
     @classmethod
     def apply_text_patches(cls, path: Path, patches: Iterable[TextPatch]) -> bool:
         original = path.read_text(encoding="utf-8")
@@ -153,3 +175,10 @@ class BasePatcher:
     @classmethod
     def apply_all(cls) -> bool:
         raise NotImplementedError
+
+    @classmethod
+    def uninstall_all(cls) -> bool:
+        target_file = getattr(cls, "_target_file", None)
+        if target_file is None:
+            raise NotImplementedError(f"{cls.__name__} does not define _target_file")
+        return cls.restore_earliest_backup(target_file())

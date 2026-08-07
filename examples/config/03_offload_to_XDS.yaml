@@ -1,0 +1,12 @@
+# 256 Tokens per KV Chunk
+chunk_size: 256
+# Enable XDS backend
+xds_path: /mnt/volume1
+# 1024GiB of XDS memory for one card.
+max_xds_size: 1024
+# GPU memory used for XDS in MiB. If this param is not given, use posix protocol.
+xds_buffer_size: 6144
+
+# Disable CPU memory
+local_cpu: false
+extra_config: {'xds_io_threads': 8}
