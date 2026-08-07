@@ -1,0 +1,11 @@
+# 256 Tokens per KV Chunk
+chunk_size: 256
+# Enable XDS backend
+xds_path: /mnt/volume1
+# 1024GiB of memory for one card
+max_xds_size: 1024
+
+# Disable CPU memory
+local_cpu: ture
+# 10GiB of CPU memory for one card
+max_local_cpu_size: 32.0
