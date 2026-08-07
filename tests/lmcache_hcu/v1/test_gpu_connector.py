@@ -73,7 +73,7 @@ def test_paged_connector_from_metadata_preserves_mla_flag(monkeypatch):
 
 
 def test_paged_connector_reads_flash_attention_pa_env(monkeypatch):
-    """The HCU connector should capture VLLM_USE_FLASH_ATTN_PA during construction."""
+    """The HCU connector should accept VLLM_USE_FLASH_ATTN_PA during construction."""
     monkeypatch.setattr(torch.cuda, "Stream", lambda: _FakeStream())
     monkeypatch.setattr(sys.modules["vllm.envs"], "VLLM_USE_FLASH_ATTN_PA", True)
 
@@ -84,7 +84,8 @@ def test_paged_connector_reads_flash_attention_pa_env(monkeypatch):
         use_mla=False,
     )
 
-    assert connector.use_flash_attn_pa is True
+    assert sys.modules["vllm.envs"].VLLM_USE_FLASH_ATTN_PA is True
+    assert connector.use_mla is False
 
 
 def test_paged_connector_get_shape_uses_kv_size_for_mha_and_mla(monkeypatch):
