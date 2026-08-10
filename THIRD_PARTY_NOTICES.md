@@ -13,7 +13,6 @@
 - Upstream version: v0.3.12
 - Fixed source commit: 58e0aef462eda7c451f84735b277b35e02dce227
 - License: Apache License, Version 2.0
-- Local path: tests/test_version_integrity.py
 - Hygon modifications: Based on the upstream testing framework, with HCU-specific test integration and bootstrap logic implemented.
 
 
