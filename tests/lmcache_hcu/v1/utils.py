@@ -1,5 +1,7 @@
-# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd., 2026.
+# Based on LMCache-Ascend v0.3.12 (58e0aef462eda7c451f84735b277b35e02dce227).
 """HCU test utilities used to adapt reusable upstream LMCache tests."""
 from __future__ import annotations
 
