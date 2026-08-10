@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+# Standard
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd., 2026.
 """Prepare installed upstream LMCache tests for LMCache-HCU test reuse."""
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ LOCAL_UPSTREAM_SOURCE = os.path.abspath(
         os.path.dirname(__file__),
         "..",
         "..",
-        "LMCache_0.3.13_only_source",
+        "LMCache_0.3.13_source",
         "LMCache",
     )
 )

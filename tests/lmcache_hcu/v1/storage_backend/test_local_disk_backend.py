@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 """Tests LMCache-HCU local disk backend behavior.
 
 The HCU local disk backend keeps cached_positions metadata when loading objects

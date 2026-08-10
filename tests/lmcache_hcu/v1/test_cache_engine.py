@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd., 2026.
 """Reuses upstream LMCache cache engine tests against LMCache-HCU runtime patches.
 
 These tests exercise the patched cache engine through upstream store/retrieve,

@@ -563,7 +563,7 @@ void multi_layer_kv_transfer_asymmetric(
     const bool direction) {
 
     c10::ScalarType dtype = key_value.dtype().toScalarType();
-    printf("key_value dtype:: %s\n", c10::toString(dtype));
+//     printf("key_value dtype:: %s\n", c10::toString(dtype));
     if (dtype == c10::kBFloat16) {
       dtype = c10::kShort;
     }

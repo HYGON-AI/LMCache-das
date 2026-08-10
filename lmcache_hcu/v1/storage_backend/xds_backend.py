@@ -51,7 +51,7 @@ from lmcache.v1.storage_backend.cache_policy import get_cache_policy
 from lmcache.v1.storage_backend.job_executor.pq_executor import (
     AsyncPQThreadPoolExecutor,
 )
-from lmcache_hcu.v1.hipfille import HIPFile
+from lmcache_hcu.v1.hipfile import HIPFile
 from lmcache.v1.storage_backend.local_cpu_backend import LocalCPUBackend
 
 logger = init_logger(__name__)

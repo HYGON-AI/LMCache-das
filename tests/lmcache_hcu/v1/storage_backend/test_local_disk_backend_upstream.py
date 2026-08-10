@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Modified by Hygon Information Technology Co., Ltd., 2026.
 """Reuse upstream LocalDiskBackend tests with LMCache-HCU runtime patches active."""
 from __future__ import annotations
 
