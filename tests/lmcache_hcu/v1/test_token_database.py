@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 """Tests LMCache-HCU token database hash behavior.
 
 The HCU runtime patch replaces TokenDatabase._hash_tokens so tensor and list

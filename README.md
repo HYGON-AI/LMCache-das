@@ -2,9 +2,9 @@ This repository is based on the following fixed upstream baseline:<br>
  
  • Upstream project: LMCache<br>
  
- • Upstream repository: GitHub - LMCache/LMCache: LMCache is a KV cache management layer for LLM inference.<br>
+ • Upstream repository: GitHub - https://github.com/LMCache/LMCache.git: LMCache is a KV cache management layer for LLM inference.<br>
  
- • Upstream branch: main<br>
+ • Upstream branch: dev<br>
  
  • Upstream tag: v0.3.13<br>
  
@@ -86,7 +86,7 @@ lmcache_hcu/
   |   |   |-- __init__.py
   |   |   |-- cache_engine.py
   |   |   |-- gpu_connector.py
-  |   |   |-- hipfille.py
+  |   |   |-- hipfile.py
   |   |   `-- memory_management.py
   |   |-- __init__.py
   |   |-- _build_info.py

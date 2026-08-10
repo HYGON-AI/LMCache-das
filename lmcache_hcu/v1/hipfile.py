@@ -1,8 +1,5 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2024-2025 Mooncake Authors
-# Modifications Copyright 2026 Hygon Information Technology Co., Ltd.
-#
-# Licensed under the Apache License, Version 2.0
 
 
 """

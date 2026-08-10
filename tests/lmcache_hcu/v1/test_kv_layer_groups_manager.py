@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd., 2026.
 """Tests HCU KV layer group behavior with local functional cases.
 
 These tests mirror the upstream KVLayerGroupsManager coverage, but call the

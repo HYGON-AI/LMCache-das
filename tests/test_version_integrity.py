@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Modified by Hygon Information Technology Co., Ltd., 2026.
 """Verify that the installed upstream LMCache version matches LMCache-HCU."""
 from __future__ import annotations
 

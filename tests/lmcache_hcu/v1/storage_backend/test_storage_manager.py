@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 """Tests LMCache-HCU storage manager runtime patches.
 
 The HCU runtime patch extends StorageManager.touch_cache so XdsBackend is touched

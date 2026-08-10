@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # Modifications Copyright 2026 Hygon Information Technology Co., Ltd.
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import torch
 from lmcache.logging import init_logger
 from lmcache.v1.memory_management import GPUMemoryAllocator
 
-from lmcache_hcu.v1.hipfille import HIPFile
+from lmcache_hcu.v1.hipfile import HIPFile
 
 logger = init_logger(__name__)
 

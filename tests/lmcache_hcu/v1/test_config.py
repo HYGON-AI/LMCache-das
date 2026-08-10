@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 """Tests LMCache-HCU v1 configuration patch behavior.
 
 The HCU runtime patch extends upstream LMCacheEngineConfig with XDS options and

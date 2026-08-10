@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 """Tests LMCache-HCU GDS backend behavior.
 
 The HCU GDS backend subclasses upstream GdsBackend and customizes metadata reads

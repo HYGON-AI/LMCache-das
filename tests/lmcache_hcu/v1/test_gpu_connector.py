@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 """Tests LMCache-HCU GPU connector metadata and shape behavior.
 
 The HCU GPU connector computes connector dimensions from LMCache metadata and
@@ -23,7 +24,7 @@ if "vllm.envs" not in sys.modules:
     sys.modules["vllm.envs"] = envs
     sys.modules["vllm"].envs = envs
 
-# First Party
+
 import lmcache_hcu
 from lmcache.v1.gpu_connector import VLLMPagedMemGPUConnectorV2
 

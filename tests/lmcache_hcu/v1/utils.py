@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 """HCU test utilities used to adapt reusable upstream LMCache tests."""
 from __future__ import annotations
