@@ -97,7 +97,7 @@ def _patch_vllm_paged_mem_gpu_connector_v2() -> None:
         from lmcache_hcu.v1.hcu_connector import (
             VLLMPagedMemHCUConnectorV2 as VLLMPagedMemHCUConnectorV2,
             VLLMBufferLayerwiseGPUConnector as HCUVLLMBufferLayerwiseGPUConnector,
-            VLLMPagedMemLayerwiseGPUConnector as HCUVLLMBufferLayerwiseGPUConnector
+            VLLMPagedMemLayerwiseGPUConnector as HCUVLLMPagedMemLayerwiseGPUConnector
         )
     except Exception as exc:
         logger.warning("Skip HCU gpu_connector patch (import failed): %s", exc)
@@ -105,7 +105,7 @@ def _patch_vllm_paged_mem_gpu_connector_v2() -> None:
 
     base_gpu_connector.VLLMPagedMemGPUConnectorV2 = VLLMPagedMemHCUConnectorV2
     base_gpu_connector.VLLMBufferLayerwiseGPUConnector = HCUVLLMBufferLayerwiseGPUConnector
-    base_gpu_connector.VLLMPagedMemLayerwiseGPUConnector = HCUVLLMBufferLayerwiseGPUConnector
+    base_gpu_connector.VLLMPagedMemLayerwiseGPUConnector = HCUVLLMPagedMemLayerwiseGPUConnector
 
 
     # Rebind the class in already-imported caller modules that pulled it into
