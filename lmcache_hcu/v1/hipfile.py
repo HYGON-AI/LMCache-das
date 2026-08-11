@@ -1058,7 +1058,7 @@ class HIPFile:
         logger.info(f"Started periodic global stats logging every {interval} seconds")
 
     @classmethod
-    def stop_periodic_logging(cls):
+    def stop_periodic_logging(cls, interval: int = 300):
         """
         Stop periodic logging
         

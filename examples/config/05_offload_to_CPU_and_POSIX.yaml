@@ -9,3 +9,4 @@ max_xds_size: 1024
 local_cpu: ture
 # 10GiB of CPU memory for one card
 max_local_cpu_size: 32.0
+

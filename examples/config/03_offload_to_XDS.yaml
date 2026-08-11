@@ -10,3 +10,4 @@ xds_buffer_size: 6144
 # Disable CPU memory
 local_cpu: false
 extra_config: {'xds_io_threads': 8}
+
