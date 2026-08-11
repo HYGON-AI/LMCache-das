@@ -6,3 +6,4 @@ xds_path: /mnt/volume1
 max_xds_size: 1024
 
 extra_config: {'use_odirect': True}
+
