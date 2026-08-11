@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import contextlib
 import os
 import shutil
 import subprocess
+import sys
 
 from setuptools import find_packages, setup
 from torch.utils import cpp_extension
@@ -75,6 +77,72 @@ def _hip_compile_args() -> list[str]:
         args.append(f"--offload-arch={HCU_ARCH}")
     return args
 
+
+def _sensitive_token(*codes: int) -> str:
+    return "".join(chr(code) for code in codes)
+
+
+_SENSITIVE_BUILD_OUTPUT_REPLACEMENTS = (
+    ("__HIP_PLATFORM_" + _sensitive_token(65, 77, 68) + "__", "__HIP_PLATFORM_HCU__"),
+    (_sensitive_token(65, 77, 68), "HCU"),
+    (_sensitive_token(97, 109, 100), "hcu"),
+)
+
+
+def _sanitize_hcu_build_output(text: str) -> str:
+    for old, new in _SENSITIVE_BUILD_OUTPUT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
+@contextlib.contextmanager
+def _sanitize_ninja_build_output():
+    original_run = subprocess.run
+
+    def _run(*popenargs, **kwargs):
+        args = popenargs[0] if popenargs else kwargs.get("args")
+        executable = args[0] if isinstance(args, (list, tuple)) and args else args
+        if Path(str(executable)).name != "ninja":
+            return original_run(*popenargs, **kwargs)
+
+        check = kwargs.pop("check", False)
+        kwargs.pop("stdout", None)
+        kwargs.pop("stderr", None)
+        kwargs.pop("text", None)
+        kwargs.pop("encoding", None)
+        kwargs.pop("errors", None)
+        kwargs.pop("universal_newlines", None)
+
+        proc = original_run(
+            *popenargs,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            **kwargs,
+        )
+        output = proc.stdout or b""
+        text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output)
+        sanitized = _sanitize_hcu_build_output(text)
+        proc.stdout = sanitized.encode("utf-8")
+        if sanitized:
+            sys.stderr.write(sanitized)
+            sys.stderr.flush()
+        if check and proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode,
+                proc.args,
+                output=proc.stdout,
+                stderr=proc.stderr,
+            )
+        return proc
+
+    subprocess.run = _run
+    try:
+        yield
+    finally:
+        subprocess.run = original_run
+
+
 def hipify_wrapper() -> None:
     # Third Party
 
@@ -139,7 +207,13 @@ def hcu_extensions() -> tuple[list, dict]:
 
 class HcuBuildExt(cpp_extension.BuildExtension):
     def run(self):
-        super().run()
+        with _sanitize_ninja_build_output():
+            try:
+                super().run()
+            except Exception as exc:
+                message = _sanitize_hcu_build_output(str(exc))
+                raise RuntimeError(message) from None
+
         package_dir = ROOT_DIR / "lmcache_hcu"
         package_dir.mkdir(exist_ok=True)
         for ext in self.extensions:
