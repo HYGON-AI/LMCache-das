@@ -44,7 +44,8 @@ jobs:
       HCU_CI_ISOLATED_RUNNER: ${{ vars.LMCACHE_HCU_RUNNER_ISOLATED }}
       HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
       HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
-      HCU_CI_GPU_LOCK: /tmp/hcu-ci-gpu-locks/gpu-0.lock
+      HCU_CI_VISIBLE_DEVICES: ${{ vars.LMCACHE_HCU_VISIBLE_DEVICES || '0,1,2,3,4,5,6,7' }}
+      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-runner-locks/bw18-hygon-hcu-lmcache.lock
       HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
       HCU_CI_RUN_ID: ${{ github.run_id }}
       HCU_CI_ATTEMPT: ${{ github.run_attempt }}
