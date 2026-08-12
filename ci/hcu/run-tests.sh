@@ -232,6 +232,7 @@ phase_initialize() {
         python3 "${CI_HELPER}" probe \
             --compatibility "${COMPATIBILITY}" \
             --expected-arch "${HCU_CI_HCU_ARCH:-}" \
+            --expected-device-count "${HCU_CI_EXPECTED_DEVICE_COUNT:-0}" \
             --output "${OUTPUT_ROOT}/environment.json" || return $?
     activate_environment
     run_phase upstream-source 3 \

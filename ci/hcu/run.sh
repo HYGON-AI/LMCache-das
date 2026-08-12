@@ -16,7 +16,8 @@ readonly REPOSITORY="${GITHUB_REPOSITORY:-HYGON-AI/LMCache-das}"
 readonly BASE_IMAGE="${HCU_CI_BASE_IMAGE:-}"
 readonly SHARED_ROOT="${HCU_CI_SHARED_ROOT:-/ci_public/lmcache-das}"
 readonly UPSTREAM_ASSET="${HCU_CI_UPSTREAM_SOURCE:-/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111}"
-readonly GPU_LOCK="${HCU_CI_GPU_LOCK:-/tmp/hcu-ci-gpu-locks/gpu-0.lock}"
+readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-runner-locks/bw18-hygon-hcu-lmcache.lock}"
 readonly RUNNER_TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
 readonly CONTAINER_MEMORY="${HCU_CI_CONTAINER_MEMORY:-56g}"
 readonly CONTAINER_CPUS="${HCU_CI_CONTAINER_CPUS:-32}"
@@ -144,15 +145,35 @@ check_pr_revision() {
 }
 
 device_arguments() {
-    local render_link render_device card_link card_device
-    render_link="$({ find /dev/dri/by-path -maxdepth 1 -type l -name '*-render' -print; } | LC_ALL=C sort | sed -n '1p')"
-    [[ -n "${render_link}" ]]
-    card_link="${render_link%-render}-card"
-    [[ -L "${card_link}" ]]
-    render_device="$(readlink -f -- "${render_link}")"
-    card_device="$(readlink -f -- "${card_link}")"
-    [[ -c /dev/kfd && -c "${render_device}" && -c "${card_device}" ]]
-    printf '%s\0' --device /dev/kfd --device "${render_device}" --device "${card_device}"
+    local -a render_links=() selected_devices=()
+    local ordinal render_link render_device card_link card_device
+    mapfile -t render_links < <(find /dev/dri/by-path -maxdepth 1 -type l -name '*-render' -print | LC_ALL=C sort)
+    IFS=',' read -r -a selected_devices <<<"${VISIBLE_DEVICES}"
+    [[ -c /dev/kfd && ${#render_links[@]} -gt 0 ]]
+    printf '%s\0' --device /dev/kfd
+    for ordinal in "${selected_devices[@]}"; do
+        [[ "${ordinal}" =~ ^[0-9]+$ ]]
+        (( ordinal < ${#render_links[@]} ))
+        render_link="${render_links[ordinal]}"
+        card_link="${render_link%-render}-card"
+        [[ -L "${card_link}" ]]
+        render_device="$(readlink -f -- "${render_link}")"
+        card_device="$(readlink -f -- "${card_link}")"
+        [[ -c "${render_device}" && -c "${card_device}" ]]
+        printf '%s\0' --device "${render_device}" --device "${card_device}"
+    done
+}
+
+validate_visible_devices() {
+    local -a devices=()
+    local device
+    declare -A seen=()
+    [[ "${VISIBLE_DEVICES}" =~ ^[0-7](,[0-7])*$ ]]
+    IFS=',' read -r -a devices <<<"${VISIBLE_DEVICES}"
+    for device in "${devices[@]}"; do
+        [[ -z "${seen[${device}]:-}" ]]
+        seen["${device}"]=1
+    done
 }
 
 host_preflight() {
@@ -169,10 +190,11 @@ host_preflight() {
     [[ -d "${UPSTREAM_ASSET}/.git" ]]
     [[ "$(readlink -m -- "${UPSTREAM_ASSET}")" == "/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/"* ]]
     [[ -e /dev/kfd && -d /dev/dri && -d /opt/hyhal ]]
+    validate_visible_devices
     device_arguments >/dev/null
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
-    [[ "$(readlink -m -- "${GPU_LOCK}")" == "/tmp/hcu-ci-gpu-locks/"* ]]
-    mkdir -p "${SHARED_ROOT}" "$(dirname "${GPU_LOCK}")"
+    [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-runner-locks/"* ]]
+    mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
     docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1 || docker pull "${BASE_IMAGE}"
     docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
         "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}"
@@ -191,10 +213,10 @@ validate_configuration() {
 }
 
 start_gpu_lease() {
-    # Hold the flock in a trusted host process for the complete Actions job. A
+    # Keep the dedicated BW18 runner exclusive for the complete Actions job. A
     # normal shell fd would be released between workflow steps.
     nohup python3 "${HOST_HELPER}" hold-lock \
-        --lock "${GPU_LOCK}" \
+        --lock "${RUNNER_LOCK}" \
         --ready "${TRUSTED_STATE_ROOT}/lease-ready" \
         --timeout 300 \
         >"${HOST_LOG_ROOT}/gpu-lease-process.log" 2>&1 &
@@ -219,7 +241,7 @@ device_and_group_arguments() {
     local -a device_args=()
     local value index gid
     while IFS= read -r -d '' value; do device_args+=("${value}"); done < <(device_arguments)
-    (( ${#device_args[@]} == 6 ))
+    (( ${#device_args[@]} >= 6 && ${#device_args[@]} % 2 == 0 ))
     for value in "${device_args[@]}"; do printf '%s\0' "${value}"; done
     while IFS= read -r gid; do
         [[ -n "${gid}" ]] && printf '%s\0' --group-add "${gid}"
@@ -255,7 +277,8 @@ start_test_container() {
         --mount "type=bind,src=${CONTROLLER_ROOT},dst=/opt/ci,readonly" \
         --mount "type=bind,src=${CHECKOUT_ROOT},dst=/input/source,readonly" \
         --mount "type=bind,src=${UPSTREAM_ASSET},dst=/input/upstream,readonly" \
-        --env HIP_VISIBLE_DEVICES=0 --env CUDA_VISIBLE_DEVICES=0 --env ROCR_VISIBLE_DEVICES=0 \
+        --env HIP_VISIBLE_DEVICES="${VISIBLE_DEVICES}" --env CUDA_VISIBLE_DEVICES="${VISIBLE_DEVICES}" \
+        --env HCU_CI_EXPECTED_DEVICE_COUNT="8" \
         --env HCU_CI_PROFILE="${PROFILE}" --env HCU_CI_REPEAT="${REPEAT}" \
         --env HCU_CI_SOURCE_SHA="${SOURCE_SHA}" --env HCU_CI_HCU_ARCH="${HCU_CI_HCU_ARCH:-}" \
         --entrypoint tail "${BASE_IMAGE}" -f /dev/null >/dev/null
