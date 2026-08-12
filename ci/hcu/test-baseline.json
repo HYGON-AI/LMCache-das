@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "minimum_collected": 75,
+  "required_test_definitions": {
+    "tests/lmcache_hcu/test_c_ops.py": [
+      "test_without_proxy_lmcache_c_ops_uses_baseline_module",
+      "test_with_proxy_mem_kernel_symbols_use_hcu_extension",
+      "test_with_proxy_non_mem_kernel_symbols_fall_back_to_baseline",
+      "test_proxy_dir_contains_hcu_and_baseline_symbols",
+      "test_proxy_raises_for_baseline_symbol_when_base_module_missing",
+      "test_patch_c_ops_installs_proxy_and_captures_baseline",
+      "test_patch_c_ops_rebinds_loaded_lmc_ops_users",
+      "test_load_baseline_c_ops_returns_existing_non_proxy_module"
+    ],
+    "tests/lmcache_hcu/test_observability.py": [
+      "test_patch_observability_replaces_upstream_module",
+      "test_disk_to_memory_metrics_are_collected_and_cleared",
+      "test_memory_to_hbm_metrics_are_collected_and_cleared",
+      "test_unfinished_hcu_load_requests_survive_clear",
+      "test_thread_pool_status_is_reported_and_preserved_across_clear",
+      "test_prometheus_logger_registers_and_logs_hcu_metrics"
+    ],
+    "tests/lmcache_hcu/test_vllm_adapter_block_table_patch.py": [
+      "test_flatten_block_ids_accepts_plain_list",
+      "test_flatten_block_ids_uses_first_kv_group_from_tuple",
+      "test_same_block_prefix_detects_full_block_table",
+      "test_same_block_prefix_rejects_delta_block_table",
+      "test_same_block_prefix_rejects_divergent_block_table"
+    ],
+    "tests/lmcache_hcu/v1/storage_backend/test_gds_backend.py": [
+      "test_read_metadata_info_falls_back_when_noatime_open_fails",
+      "test_read_metadata_info_uses_normal_open_after_noatime_disabled",
+      "test_read_metadata_stores_decoded_metadata",
+      "test_read_metadata_rejects_unknown_metadata_version",
+      "test_load_bytes_from_disk_with_allocation_loads_into_allocated_memory",
+      "test_load_bytes_from_disk_with_allocation_returns_none_when_allocation_fails"
+    ],
+    "tests/lmcache_hcu/v1/storage_backend/test_local_cpu_backend.py": [
+      "TestLocalCPUBackend::test_init",
+      "TestLocalCPUBackend::test_init_with_lookup_server_and_worker",
+      "TestLocalCPUBackend::test_init_with_layerwise_config",
+      "TestLocalCPUBackend::test_str",
+      "TestLocalCPUBackend::test_contains_key_not_exists",
+      "TestLocalCPUBackend::test_contains_key_exists",
+      "TestLocalCPUBackend::test_exists_in_put_tasks",
+      "TestLocalCPUBackend::test_submit_put_task",
+      "TestLocalCPUBackend::test_submit_put_task_reinsert",
+      "TestLocalCPUBackend::test_batched_submit_put_task",
+      "TestLocalCPUBackend::test_batched_submit_put_task_disabled",
+      "TestLocalCPUBackend::test_get_blocking_key_not_exists",
+      "TestLocalCPUBackend::test_get_blocking_key_exists",
+      "TestLocalCPUBackend::test_pin_unpin",
+      "TestLocalCPUBackend::test_remove",
+      "TestLocalCPUBackend::test_remove_non_existent",
+      "TestLocalCPUBackend::test_remove_with_worker",
+      "TestLocalCPUBackend::test_allocate",
+      "TestLocalCPUBackend::test_allocate_with_format",
+      "TestLocalCPUBackend::test_allocate_with_layerwise_config",
+      "TestLocalCPUBackend::test_batched_allocate",
+      "TestLocalCPUBackend::test_get_keys",
+      "TestLocalCPUBackend::test_get_keys_empty",
+      "TestLocalCPUBackend::test_concurrent_access",
+      "TestLocalCPUBackend::test_thread_safety",
+      "TestLocalCPUBackend::test_ref_count_management"
+    ],
+    "tests/lmcache_hcu/v1/storage_backend/test_local_disk_backend.py": [
+      "test_get_blocking_preserves_cached_positions_on_loaded_memory",
+      "test_get_blocking_returns_none_for_missing_key",
+      "test_load_bytes_from_disk_returns_allocated_memory_when_read_succeeds",
+      "test_load_bytes_from_disk_returns_none_when_read_fails",
+      "test_read_file_removes_stale_metadata_when_file_is_missing"
+    ],
+    "tests/lmcache_hcu/v1/storage_backend/test_local_disk_backend_upstream.py": [
+      "TestLocalDiskBackend::test_init",
+      "TestLocalDiskBackend::test_init_with_lookup_server_and_worker",
+      "TestLocalDiskBackend::test_str",
+      "TestLocalDiskBackend::test_key_to_path",
+      "TestLocalDiskBackend::test_contains_key_not_exists",
+      "TestLocalDiskBackend::test_get_blocking_key_not_exists"
+    ],
+    "tests/lmcache_hcu/v1/storage_backend/test_storage_backend.py": [
+      "test_create_storage_backends_adds_xds_backend",
+      "test_create_storage_backends_does_not_add_xds_without_xds_path"
+    ],
+    "tests/lmcache_hcu/v1/storage_backend/test_storage_manager.py": [
+      "test_touch_cache_touches_local_cpu_local_disk_and_xds_only",
+      "test_allocate_and_copy_objects_returns_actual_allocated_keys",
+      "test_allocate_and_copy_objects_handles_middle_skipped_key"
+    ],
+    "tests/lmcache_hcu/v1/test_cache_engine.py": [
+      "test_paged_retrieve_prefix_hcu",
+      "test_retrieve_returns_empty_mask_when_engine_is_unhealthy",
+      "test_retrieve_sync_path_records_hcu_stats_and_loads_to_gpu",
+      "test_retrieve_async_path_uses_async_token_processing",
+      "test_retrieve_remove_after_retrieve_deletes_storage_key",
+      "test_create_memory_allocator_uses_hyfile_for_xds_on_hcu"
+    ],
+    "tests/lmcache_hcu/v1/test_config.py": [
+      "test_xds_config_definitions_are_registered",
+      "test_from_defaults_contains_hcu_xds_fields",
+      "test_from_defaults_accepts_hcu_xds_values",
+      "test_from_env_parses_hcu_xds_values",
+      "test_from_file_parses_hcu_xds_values",
+      "test_from_dict_parses_hcu_xds_values",
+      "test_config_class_keeps_upstream_helpers_after_recreation",
+      "test_invalid_xds_numeric_env_falls_back_to_default"
+    ],
+    "tests/lmcache_hcu/v1/test_gpu_connector.py": [
+      "test_paged_connector_from_metadata_sets_dimensions",
+      "test_paged_connector_from_metadata_preserves_mla_flag",
+      "test_paged_connector_reads_flash_attention_pa_env",
+      "test_paged_connector_get_shape_uses_kv_size_for_mha_and_mla"
+    ],
+    "tests/lmcache_hcu/v1/test_kv_layer_groups_manager.py": [
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_empty",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_skips_when_already_built",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_use_mla_ignores_flash_attention_pa",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_single_layer",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_multiple_layers_same_shape",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_different_shapes",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_different_dtypes",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_preserves_first_layer_order",
+      "TestKVLayerGroupsManager::test_build_kv_layer_groups_flash_attention_pa_uses_inner_kv_shape",
+      "TestKVLayerGroupsManager::test_hidden_dim_size_mha_mla_and_flash_attention_pa",
+      "TestKVLayerGroupsManager::test_hidden_dim_size_rejects_invalid_flash_attention_pa_shape"
+    ],
+    "tests/lmcache_hcu/v1/test_memory_management.py": [
+      "test_attach_parent_allocator_updates_memory_obj_parent",
+      "test_attach_parent_allocator_ignores_none_and_objects_without_field",
+      "test_attach_parent_allocator_batch_updates_each_memory_obj",
+      "test_attach_parent_allocator_batch_preserves_none",
+      "test_patch_parent_allocator_semantics_patches_upstream_allocators",
+      "test_hyfile_memory_allocator_registers_global_buffer"
+    ],
+    "tests/lmcache_hcu/v1/test_token_database.py": [
+      "test_hash_tokens_accepts_tensor_tokens",
+      "test_hash_tokens_accepts_list_tokens",
+      "test_hash_tokens_includes_prefix_hash_and_extra_keys",
+      "test_hash_tokens_uses_empty_defaults_for_missing_prefix_and_extra_keys",
+      "test_hash_tokens_rejects_unsupported_token_type"
+    ]
+  },
+  "required_test_files": [
+    "tests/lmcache_hcu/test_c_ops.py",
+    "tests/lmcache_hcu/test_observability.py",
+    "tests/lmcache_hcu/test_vllm_adapter_block_table_patch.py",
+    "tests/lmcache_hcu/v1/storage_backend/test_gds_backend.py",
+    "tests/lmcache_hcu/v1/storage_backend/test_local_cpu_backend.py",
+    "tests/lmcache_hcu/v1/storage_backend/test_local_disk_backend.py",
+    "tests/lmcache_hcu/v1/storage_backend/test_local_disk_backend_upstream.py",
+    "tests/lmcache_hcu/v1/storage_backend/test_storage_backend.py",
+    "tests/lmcache_hcu/v1/storage_backend/test_storage_manager.py",
+    "tests/lmcache_hcu/v1/test_cache_engine.py",
+    "tests/lmcache_hcu/v1/test_config.py",
+    "tests/lmcache_hcu/v1/test_gpu_connector.py",
+    "tests/lmcache_hcu/v1/test_kv_layer_groups_manager.py",
+    "tests/lmcache_hcu/v1/test_memory_management.py",
+    "tests/lmcache_hcu/v1/test_token_database.py"
+  ]
+}

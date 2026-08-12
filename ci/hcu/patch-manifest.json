@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "fc031d471a566edb6d49a86c9116cc23cfb04111",
+  "targets": [
+    {
+      "module": "lmcache",
+      "relative_path": "lmcache/__init__.py",
+      "preimage_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "required": true,
+      "marker": "# END LMCACHE_HCU_RUNTIME_PATCH",
+      "begin_marker": "# BEGIN LMCACHE_HCU_RUNTIME_PATCH"
+    },
+    {
+      "module": "lmcache.integration.vllm.lmcache_connector_v1",
+      "relative_path": "lmcache/integration/vllm/lmcache_connector_v1.py",
+      "preimage_sha256": "e3eecc1e7c803830a669a420d83bce3c64e44b9591b2c535e22dba27162696df",
+      "required": true,
+      "marker": "# END LMCACHE_HCU_VLLM_CONNECTOR_PATCH",
+      "begin_marker": "# BEGIN LMCACHE_HCU_VLLM_CONNECTOR_PATCH",
+      "anchor": "from lmcache.integration.vllm.vllm_v1_adapter import LMCacheConnectorV1Impl"
+    }
+  ]
+}
