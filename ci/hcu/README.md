@@ -2,9 +2,10 @@
 
 This directory contains the platform-neutral controller used by the HCU PR and
 manual GitHub Actions workflows. The first release intentionally runs every
-pytest test discovered under the repository `tests/` directory in one process
-on one HCU device. It does not claim to run the complete upstream LMCache test
-tree.
+pytest test discovered under the repository `tests/` directory in one process.
+The BW18 runner exposes all eight HCU devices by default, matching the SGLang
+runner resource model, although the current tests do not yet claim multi-device
+coverage. It does not claim to run the complete upstream LMCache test tree.
 
 ## Execution contract
 
@@ -22,9 +23,8 @@ tree.
   preparation, pytest execution, and an always-run cleanup/publication step.
   The four HCU phases use one restricted container, so the selected commit is
   compiled exactly once and the same wheel and virtual environment are reused.
-- A minimal trusted host lease process holds the local GPU lock for the complete
-  job. It prevents another CI job on the same host from taking the device while
-  GitHub moves between workflow steps. The lease receives no source, device,
+- A minimal trusted host lease process holds the dedicated runner lock for the
+  complete job while GitHub moves between workflow steps. The lease receives no source, device,
   output, network, or shared-results access.
 - Because the current `setup.py` package discovery would include `tests/`, the
   controller first copies the full test tree to its execution directory and
@@ -56,11 +56,18 @@ The final step uses `if: always()`. The four compute phases use
 `!cancelled()`, so a cancelled superseded run does not start another expensive
 phase while cleanup still gets a chance to run. Finalization restores temporary
 patches, imports the bounded output, removes the test and legacy lease
-containers, releases the GPU lock, validates the reports, and publishes the run. The
-GPU lease is released only after the test container is confirmed absent; if
+containers, releases the runner lock, validates the reports, and publishes the run. The
+runner lease is released only after the test container is confirmed absent; if
 Docker cannot remove it, the lease remains held and the isolated runner must be
 reset. A prior build or test failure remains visible on its own step;
 cleanup/publication does not hide it.
+
+The default device selection is `0,1,2,3,4,5,6,7`. It can be changed through
+the reviewed repository variable `LMCACHE_HCU_VISIBLE_DEVICES`. The current
+preflight requires all eight cards and rejects duplicates, out-of-range
+ordinals, missing device nodes, or an unexpected visible-device count. As in SGLang,
+`HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES` select the cards;
+`ROCR_VISIBLE_DEVICES` is not forced.
 
 The workflow is pinned to the registered `bw18-hygon-hcu-lmcache` runner by
 requiring all of these labels:
