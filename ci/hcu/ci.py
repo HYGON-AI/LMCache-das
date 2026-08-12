@@ -196,6 +196,11 @@ def cmd_probe(args: argparse.Namespace) -> int:
         raise CIError("torch.cuda.is_available() is false")
     if torch.cuda.device_count() < 1:
         raise CIError("No HCU device is visible")
+    if args.expected_device_count and torch.cuda.device_count() != args.expected_device_count:
+        raise CIError(
+            "HCU device count mismatch: expected "
+            f"{args.expected_device_count}, got {torch.cuda.device_count()}"
+        )
     try:
         base_lmcache_hcu = importlib.metadata.version("lmcache-hcu")
     except importlib.metadata.PackageNotFoundError:
@@ -915,6 +920,7 @@ def build_parser() -> argparse.ArgumentParser:
     probe = subparsers.add_parser("probe")
     probe.add_argument("--compatibility", required=True)
     probe.add_argument("--expected-arch", default="")
+    probe.add_argument("--expected-device-count", type=int, default=0)
     probe.add_argument("--output", required=True)
     probe.set_defaults(func=cmd_probe)
 
