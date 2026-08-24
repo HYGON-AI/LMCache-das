@@ -3,18 +3,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
 set -Eeuo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SELFTEST_CACHE="$(mktemp -d /tmp/lmcache-hcu-selftest.XXXXXX)"
 trap 'case "${SELFTEST_CACHE}" in /tmp/lmcache-hcu-selftest.*) rm -rf -- "${SELFTEST_CACHE}" ;; esac' EXIT
 
-PYTHONPYCACHEPREFIX="${SELFTEST_CACHE}" python3 -m py_compile "${SCRIPT_DIR}/host.py"
+python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+    "${SCRIPT_DIR}/host.py" "${SELFTEST_CACHE}/host.pyc"
+python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+    "${SCRIPT_DIR}/model-ci.py" "${SELFTEST_CACHE}/model-ci.pyc"
 python3 -m json.tool "${SCRIPT_DIR}/compatibility.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/patch-manifest.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/test-baseline.json" >/dev/null
+python3 -m json.tool "${SCRIPT_DIR}/model-test-manifest.json" >/dev/null
 bash -n "${SCRIPT_DIR}/run.sh"
 bash -n "${SCRIPT_DIR}/run-tests.sh"
 python3 "${SCRIPT_DIR}/host.py" selftest
+python3 "${SCRIPT_DIR}/model-ci.py" selftest
+python3 "${SCRIPT_DIR}/model-ci.py" validate \
+    --manifest "${SCRIPT_DIR}/model-test-manifest.json" \
+    --profile pr --runner nmz4 --visible-devices 0,1 >/dev/null
 
 STATE_FILE="${SELFTEST_CACHE}/state/state.json"
 STATUS_SHA="$(printf clean | sha256sum | awk '{print $1}')"
@@ -47,7 +56,8 @@ if python3 "${SCRIPT_DIR}/host.py" state-require \
 fi
 
 if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
-    PYTHONPYCACHEPREFIX="${SELFTEST_CACHE}" python3 -m py_compile "${SCRIPT_DIR}/ci.py"
+    python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+        "${SCRIPT_DIR}/ci.py" "${SELFTEST_CACHE}/ci.pyc"
     python3 "${SCRIPT_DIR}/ci.py" selftest
 else
     printf '%s\n' \
