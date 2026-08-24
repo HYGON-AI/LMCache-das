@@ -64,8 +64,6 @@ jobs:
         env:
           HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
           HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_TEST_TOOL_USERNAME: ${{ secrets.LMCACHE_TEST_TOOL_USERNAME }}
-          HCU_CI_TEST_TOOL_TOKEN: ${{ secrets.LMCACHE_TEST_TOOL_TOKEN }}
           HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
         run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
 

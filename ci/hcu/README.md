@@ -25,11 +25,11 @@ disposable source copy is used to build exactly one wheel, and that same wheel
 and virtual environment are reused for source-patch checks, pytest and model
 tests. The original checkout is never built in place.
 
-The fixed SourceFind test tool is fetched by the trusted host controller with a
-temporary `GIT_ASKPASS` helper. Its username and token are never mounted into
-the test container. The reviewed checkout is pinned to the commit in
-`model-test-manifest.json`; the CI never follows a moving branch and never
-executes arbitrary commands from `case_list`.
+The fixed test-tool tar archive is read from the nmz4 `/ci_public` asset tree.
+The trusted host verifies its SHA256, rejects unsafe archive entries, verifies
+the embedded Git commit and creates a clean detached checkout. No network
+credential is required or passed to the test container. The CI never follows a
+moving branch and never executes arbitrary commands from `case_list`.
 
 Container output is written to a size-bounded tmpfs. Finalization freezes the
 container, rejects links, special files, unexpected paths and oversized output,
@@ -88,12 +88,14 @@ The wheel gate records `pip check` before and after installing the current
 wheel and requires the two results to remain byte-for-byte identical; any new
 or changed dependency conflict fails the run.
 
-Required read-only SourceFind credentials:
+Fixed offline test-tool asset:
 
 ```text
-LMCACHE_TEST_TOOL_USERNAME
-LMCACHE_TEST_TOOL_TOKEN
+/ci_public/lmcache-das/assets/test-tool/
+lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar
 ```
+
+Its SHA256 and embedded Git commit are pinned in `model-test-manifest.json`.
 
 The fixed upstream source is read from:
 
@@ -150,7 +152,7 @@ git diff --check
 ```
 
 Full wheel and model execution additionally require the reviewed image, nmz4
-cache root, model assets and SourceFind credentials. The implementation does
+cache root, model assets and fixed local test-tool archive. The implementation does
 not weaken a failed compatibility, packaging, patch, pytest or model gate.
 
 The pinned LMCache v0.3.13 server fixture assumes that its CPU server becomes
