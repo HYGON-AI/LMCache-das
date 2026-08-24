@@ -2,7 +2,8 @@
   "schema_version": 1,
   "runner": "nmz4",
   "tool": {
-    "url": "https://developer.sourcefind.cn/codes/hugf_liuming3/lmcache_test_tool.git",
+    "archive": "/ci_public/lmcache-das/assets/test-tool/lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar",
+    "archive_sha256": "66401598f4f5936cf88c27dca500356788156fbe8ca972009e868ae69b7faa9e",
     "commit": "b01d189144ebbf37f3f1bfafe7ea4452dba6053f",
     "required_files": [
       "lmcache_test/prepare_output_dir.py",
@@ -30,7 +31,7 @@
     },
     "glm-5": {
       "ready": false,
-      "blocked_reason": "The SourceFind test tool does not yet contain reviewed GLM-5 vLLM and LMCache configs.",
+      "blocked_reason": "The fixed test-tool archive does not yet contain reviewed GLM-5 vLLM and LMCache configs.",
       "host_path": "/public/opendas/DL_DATA/llm-models/glm5/GLM-5",
       "container_path": "/llm/models/GLM-5",
       "gpu_count": 8
