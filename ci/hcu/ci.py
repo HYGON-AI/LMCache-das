@@ -129,8 +129,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
         raise CIError(f"Unsupported profile: {args.profile}")
     if args.repeat not in {1, 2, 3}:
         raise CIError("repeat must be 1, 2, or 3")
-    if not re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", args.base_image):
-        raise CIError("Base image must use an immutable @sha256 digest")
+    image_reference = re.fullmatch(
+        r"[A-Za-z0-9._:/-]+(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})",
+        args.base_image,
+    )
+    if not image_reference:
+        raise CIError("Base image must be a reviewed tag or immutable digest")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.base_image_id):
+        raise CIError("Base image ID must be an immutable sha256 ID")
     if not Path(args.checkout).is_dir():
         raise CIError(f"Checkout does not exist: {args.checkout}")
     if not Path(args.upstream).is_dir():
@@ -672,6 +678,8 @@ def cmd_discover(args: argparse.Namespace) -> int:
                     "-q",
                     "-p",
                     "no:cacheprovider",
+                    "-p",
+                    "lmcache_ci_pytest",
                     str(Path(args.tests).resolve()),
                 ],
                 plugins=[plugin],
@@ -730,6 +738,20 @@ def cmd_execute(args: argparse.Namespace) -> int:
     tests_root = Path(inventory.get("tests_root", "")).resolve()
     if not tests_root.is_dir():
         raise CIError(f"Test inventory has an invalid tests root: {tests_root}")
+    execute_dir = Path(args.execute_dir).resolve()
+    execute_dir.mkdir(parents=True, exist_ok=True)
+    absolute_nodeids: list[str] = []
+    for nodeid in nodeids:
+        test_path, separator, suffix = nodeid.partition("::")
+        resolved_test = Path(test_path)
+        if not resolved_test.is_absolute():
+            resolved_test = tests_root / resolved_test
+        resolved_test = resolved_test.resolve()
+        if not path_is_within(resolved_test, tests_root) or not resolved_test.is_file():
+            raise CIError(f"Test nodeid escaped or is missing: {nodeid}")
+        absolute_nodeids.append(
+            str(resolved_test) + (separator + suffix if separator else "")
+        )
     command = [
         sys.executable,
         "-m",
@@ -738,17 +760,27 @@ def cmd_execute(args: argparse.Namespace) -> int:
         str(Path(args.config).resolve()),
         "-p",
         "no:cacheprovider",
+        "-p",
+        "lmcache_ci_pytest",
         "--strict-markers",
         "--tb=short",
         "-W",
         "error:LMCache-HCU .* patch import failed:RuntimeWarning",
         f"--junitxml={Path(args.junit).resolve()}",
-        *nodeids,
+        *absolute_nodeids,
     ]
-    # Collection stores nodeids relative to the tests root (for example
-    # test_config.py::test_x). Execute from that same root so pytest resolves
-    # every collected nodeid to the exact file that produced it.
-    result = subprocess.run(command, cwd=tests_root, check=False)
+    # Keep execution outside the test tree so tests/lmcache_hcu cannot shadow
+    # the lmcache_hcu package installed from the current wheel. Absolute
+    # nodeids preserve the exact collection result without changing sys.path.
+    environment = os.environ.copy()
+    helper_root = str(Path(__file__).resolve().parent)
+    environment["PYTHONPATH"] = helper_root
+    result = subprocess.run(
+        command,
+        cwd=execute_dir,
+        env=environment,
+        check=False,
+    )
     Path(args.rc_output).write_text(str(result.returncode) + "\n", encoding="utf-8")
     return result.returncode
 
@@ -911,6 +943,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--compatibility", required=True)
     validate.add_argument("--patch-manifest", required=True)
     validate.add_argument("--base-image", required=True)
+    validate.add_argument("--base-image-id", required=True)
     validate.add_argument("--profile", required=True)
     validate.add_argument("--repeat", type=int, required=True)
     validate.add_argument("--checkout", required=True)
