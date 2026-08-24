@@ -250,6 +250,12 @@ prepare_test_tool() {
     git -C "${TEST_TOOL_ROOT}" checkout --quiet --detach "${tool_commit}"
     [[ "$(git -C "${TEST_TOOL_ROOT}" rev-parse HEAD)" == "${tool_commit}" ]]
     [[ -z "$(git -C "${TEST_TOOL_ROOT}" status --porcelain=v1 --untracked-files=all)" ]]
+    # The trusted host runs with umask 077, while the reviewed test container
+    # runs as an unprivileged image user. Expose this dedicated checkout only
+    # through a read-only bind mount, but make its Git objects and worktree
+    # traversable/readable so the container can clone and verify the pinned
+    # commit. Existing executable bits are preserved by capital-X.
+    chmod -R a+rX "${TEST_TOOL_ROOT}"
 }
 
 host_preflight() {
