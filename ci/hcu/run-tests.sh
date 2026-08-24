@@ -6,15 +6,19 @@ set -Eeuo pipefail
 
 readonly CI_ROOT="/opt/ci/ci/hcu"
 readonly CI_HELPER="${CI_ROOT}/ci.py"
+readonly MODEL_HELPER="${CI_ROOT}/model-ci.py"
+readonly MODEL_MANIFEST="${CI_ROOT}/model-test-manifest.json"
 readonly COMPATIBILITY="${CI_ROOT}/compatibility.json"
 readonly PATCH_MANIFEST="${CI_ROOT}/patch-manifest.json"
 readonly SANDBOX_ROOT="/sandbox"
 readonly SOURCE_INPUT="/input/source"
 readonly UPSTREAM_INPUT="/input/upstream"
+readonly TEST_TOOL_INPUT="/input/test-tool"
 readonly SOURCE_ROOT="${SANDBOX_ROOT}/source"
 readonly UPSTREAM_ROOT="${SANDBOX_ROOT}/upstream"
 readonly TEST_ROOT="${SANDBOX_ROOT}/test-suite/tests"
 readonly EXECUTE_ROOT="${SANDBOX_ROOT}/execute"
+readonly TEST_TOOL_ROOT="${SANDBOX_ROOT}/test-tool"
 readonly VENV_ROOT="${SANDBOX_ROOT}/venv"
 readonly OUTPUT_ROOT="/output"
 readonly WHEEL_ROOT="${OUTPUT_ROOT}/wheels"
@@ -99,6 +103,12 @@ prepare_sandbox() {
     git clone --quiet --no-hardlinks "${UPSTREAM_INPUT}" "${UPSTREAM_ROOT}"
     git -C "${UPSTREAM_ROOT}" checkout --quiet --detach \
         fc031d471a566edb6d49a86c9116cc23cfb04111
+
+    if [[ -d "${TEST_TOOL_INPUT}/.git" ]]; then
+        git clone --quiet --no-hardlinks "${TEST_TOOL_INPUT}" "${TEST_TOOL_ROOT}"
+        git -C "${TEST_TOOL_ROOT}" checkout --quiet --detach "${HCU_CI_TEST_TOOL_COMMIT}"
+        [[ "$(git -C "${TEST_TOOL_ROOT}" rev-parse HEAD)" == "${HCU_CI_TEST_TOOL_COMMIT}" ]]
+    fi
 
     python3 -m venv --system-site-packages "${VENV_ROOT}"
     # shellcheck disable=SC1091
@@ -275,6 +285,14 @@ phase_prepare_tests() {
             --config "${TEST_ROOT}/pytest.ini" \
             --execute-dir "${EXECUTE_ROOT}" \
             --output "${OUTPUT_ROOT}/test-inventory.json" || return $?
+    if [[ "${HCU_CI_MODEL_PROFILE}" != "framework" ]]; then
+        run_phase model-tool 7 \
+            python3 "${MODEL_HELPER}" verify-tool \
+                --manifest "${MODEL_MANIFEST}" \
+                --profile "${HCU_CI_MODEL_PROFILE}" \
+                --tool "${TEST_TOOL_ROOT}" \
+                --output "${OUTPUT_ROOT}/model-tool.json" || return $?
+    fi
 }
 
 phase_test() {
@@ -292,7 +310,19 @@ phase_test() {
             --junit-dir "${REPORT_ROOT}" \
             --state-dir "${STATE_ROOT}" \
             --output "${OUTPUT_ROOT}/test-summary.json" \
-            --markdown "${OUTPUT_ROOT}/summary.md"
+            --markdown "${OUTPUT_ROOT}/summary.md" || return $?
+    local -a tool_argument=()
+    if [[ "${HCU_CI_MODEL_PROFILE}" != "framework" ]]; then
+        tool_argument+=(--tool "${TEST_TOOL_ROOT}")
+    fi
+    run_phase model-tests 8 \
+        python3 "${MODEL_HELPER}" run \
+            --manifest "${MODEL_MANIFEST}" \
+            --profile "${HCU_CI_MODEL_PROFILE}" \
+            --runner "${HCU_CI_RUNNER_KIND}" \
+            --repeat "${HCU_CI_REPEAT}" \
+            --output "${OUTPUT_ROOT}" \
+            "${tool_argument[@]}"
 }
 
 phase_cleanup() {

@@ -9,6 +9,8 @@ readonly CONTROLLER_ROOT="${HCU_CI_CONTROLLER:?HCU_CI_CONTROLLER is required}"
 readonly CHECKOUT_ROOT="${HCU_CI_CHECKOUT:?HCU_CI_CHECKOUT is required}"
 readonly HOST_HELPER="${CONTROLLER_ROOT}/ci/hcu/host.py"
 readonly PROFILE="${HCU_CI_PROFILE:-pr}"
+readonly MODEL_PROFILE="${HCU_CI_MODEL_PROFILE:-${PROFILE}}"
+readonly RUNNER_KIND="${HCU_CI_RUNNER_KIND:-nmz4}"
 readonly REPEAT="${HCU_CI_REPEAT:-1}"
 readonly RUN_ID="${HCU_CI_RUN_ID:-local-$(date -u +%Y%m%d%H%M%S)}"
 readonly ATTEMPT="${HCU_CI_ATTEMPT:-1}"
@@ -16,12 +18,16 @@ readonly REPOSITORY="${GITHUB_REPOSITORY:-HYGON-AI/LMCache-das}"
 readonly BASE_IMAGE="${HCU_CI_BASE_IMAGE:-}"
 readonly SHARED_ROOT="${HCU_CI_SHARED_ROOT:-/ci_public/lmcache-das}"
 readonly UPSTREAM_ASSET="${HCU_CI_UPSTREAM_SOURCE:-/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111}"
-readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
-readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-runner-locks/bw18-hygon-hcu-lmcache.lock}"
+readonly MODEL_MANIFEST="${CONTROLLER_ROOT}/ci/hcu/model-test-manifest.json"
+readonly MODEL_HELPER="${CONTROLLER_ROOT}/ci/hcu/model-ci.py"
+readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
+readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-runner-locks/nmz4-hygon-hcu-lmcache.lock}"
+readonly CACHE_ROOT="${HCU_CI_CACHE_ROOT:-}"
 readonly RUNNER_TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
 readonly CONTAINER_MEMORY="${HCU_CI_CONTAINER_MEMORY:-56g}"
 readonly CONTAINER_CPUS="${HCU_CI_CONTAINER_CPUS:-32}"
 readonly OUTPUT_LIMIT="${HCU_CI_OUTPUT_LIMIT:-3g}"
+readonly PHASE_TIMEOUT_SECONDS="${HCU_CI_PHASE_TIMEOUT_SECONDS:-3000}"
 readonly COMMAND="${1:-}"
 readonly JOB_STATUS_FILE="${HCU_CI_JOB_STATUS_FILE:-}"
 
@@ -37,6 +43,8 @@ REPORT_ROOT=""
 STATE_FILE=""
 CONTAINER_NAME=""
 LEASE_CONTAINER=""
+TEST_TOOL_ROOT=""
+CACHE_RUN_ROOT=""
 SOURCE_STATUS=""
 SOURCE_STATUS_SHA256=""
 
@@ -92,6 +100,10 @@ resolve_context() {
     STATE_FILE="${TRUSTED_STATE_ROOT}/state.json"
     CONTAINER_NAME="lmcache-hcu-ci-${RUN_KEY}"
     LEASE_CONTAINER="lmcache-hcu-lease-${RUN_KEY}"
+    TEST_TOOL_ROOT="${TRUSTED_STATE_ROOT}/test-tool"
+    if [[ -n "${CACHE_ROOT}" ]]; then
+        CACHE_RUN_ROOT="${CACHE_ROOT}/${RUN_KEY}"
+    fi
 }
 
 state_metadata_args() {
@@ -176,6 +188,79 @@ validate_visible_devices() {
     done
 }
 
+model_tests_required() {
+    [[ "${MODEL_PROFILE}" != "framework" ]]
+}
+
+visible_device_count() {
+    local -a devices=()
+    IFS=',' read -r -a devices <<<"${VISIBLE_DEVICES}"
+    printf '%s\n' "${#devices[@]}"
+}
+
+validate_cache_root() {
+    model_tests_required || return 0
+    [[ -n "${CACHE_ROOT}" && "${CACHE_ROOT}" == /* ]]
+    [[ "${CACHE_ROOT}" == *"/lmcache-das/"* ]]
+    [[ "${CACHE_ROOT}" != "/" && "${CACHE_ROOT}" != "/tmp" && \
+       "${CACHE_ROOT}" != "/home" && "${CACHE_ROOT}" != "/ci_public" && \
+       "${CACHE_ROOT}" != "/ci_public/lmcache-das" ]]
+    mkdir -p "${CACHE_ROOT}"
+    [[ -d "${CACHE_ROOT}" && ! -L "${CACHE_ROOT}" ]]
+    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
+    [[ ! -e "${CACHE_RUN_ROOT}" ]]
+    mkdir -p "${CACHE_RUN_ROOT}/localdisk" "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
+    local directory probe
+    for directory in localdisk ssd posix; do
+        probe="${CACHE_RUN_ROOT}/${directory}/.direct-io-probe"
+        dd if=/dev/zero of="${probe}" bs=4096 count=1 oflag=direct status=none
+        rm -f -- "${probe}"
+    done
+}
+
+model_mount_arguments() {
+    model_tests_required || return 0
+    local host_path container_path
+    while IFS=$'\t' read -r host_path container_path; do
+        [[ "${host_path}" == /public/* && "${container_path}" == /llm/models/* ]]
+        [[ -d "${host_path}" && ! -L "${host_path}" ]]
+        printf '%s\0' --mount "type=bind,src=${host_path},dst=${container_path},readonly"
+    done < <(python3 "${MODEL_HELPER}" mounts \
+        --manifest "${MODEL_MANIFEST}" --profile "${MODEL_PROFILE}")
+}
+
+fetch_test_tool() {
+    model_tests_required || return 0
+    [[ -n "${HCU_CI_TEST_TOOL_USERNAME:-}" && -n "${HCU_CI_TEST_TOOL_TOKEN:-}" ]]
+    local tool_url tool_commit askpass fetch_rc
+    tool_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["url"])' "${MODEL_MANIFEST}")"
+    tool_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["commit"])' "${MODEL_MANIFEST}")"
+    [[ "${tool_url}" == https://developer.sourcefind.cn/* && "${tool_commit}" =~ ^[0-9a-f]{40}$ ]]
+    [[ ! -e "${TEST_TOOL_ROOT}" ]]
+    askpass="${TRUSTED_STATE_ROOT}/sourcefind-askpass.sh"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'case "$1" in' \
+        '  *sername*) printf "%s\\n" "${HCU_CI_TEST_TOOL_USERNAME:?}" ;;' \
+        '  *) printf "%s\\n" "${HCU_CI_TEST_TOOL_TOKEN:?}" ;;' \
+        'esac' >"${askpass}"
+    chmod 0700 "${askpass}"
+    mkdir -p "${TEST_TOOL_ROOT}"
+    git -C "${TEST_TOOL_ROOT}" init --quiet
+    git -C "${TEST_TOOL_ROOT}" remote add origin "${tool_url}"
+    set +e
+    GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="${askpass}" \
+        git -C "${TEST_TOOL_ROOT}" fetch --quiet --no-tags origin main
+    fetch_rc=$?
+    set -e
+    rm -f -- "${askpass}"
+    (( fetch_rc == 0 )) || return 1
+    git -C "${TEST_TOOL_ROOT}" cat-file -e "${tool_commit}^{commit}"
+    git -C "${TEST_TOOL_ROOT}" checkout --quiet --detach "${tool_commit}"
+    [[ "$(git -C "${TEST_TOOL_ROOT}" rev-parse HEAD)" == "${tool_commit}" ]]
+    [[ -z "$(git -C "${TEST_TOOL_ROOT}" status --porcelain=v1 --untracked-files=all)" ]]
+}
+
 host_preflight() {
     command -v docker >/dev/null
     command -v git >/dev/null
@@ -185,6 +270,7 @@ host_preflight() {
     [[ "${CONTAINER_MEMORY}" =~ ^[1-9][0-9]*[gGmM]$ ]]
     [[ "${CONTAINER_CPUS}" =~ ^[1-9][0-9]*$ ]]
     [[ "${OUTPUT_LIMIT}" =~ ^[1-9][0-9]*[gGmM]$ ]]
+    [[ "${PHASE_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]{2,5}$ ]]
     [[ "${BASE_IMAGE}" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]]
     [[ -d "${CHECKOUT_ROOT}/.git" && -d "${CONTROLLER_ROOT}/.git" ]]
     [[ -d "${UPSTREAM_ASSET}/.git" ]]
@@ -192,6 +278,11 @@ host_preflight() {
     [[ -e /dev/kfd && -d /dev/dri && -d /opt/hyhal ]]
     validate_visible_devices
     device_arguments >/dev/null
+    python3 "${MODEL_HELPER}" validate --manifest "${MODEL_MANIFEST}" \
+        --profile "${MODEL_PROFILE}" --runner "${RUNNER_KIND}" \
+        --visible-devices "${VISIBLE_DEVICES}" >/dev/null
+    validate_cache_root
+    model_mount_arguments >/dev/null
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
     [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-runner-locks/"* ]]
     mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
@@ -213,7 +304,7 @@ validate_configuration() {
 }
 
 start_gpu_lease() {
-    # Keep the dedicated BW18 runner exclusive for the complete Actions job. A
+    # Keep the dedicated nmz4 runner exclusive for the complete Actions job. A
     # normal shell fd would be released between workflow steps.
     nohup python3 "${HOST_HELPER}" hold-lock \
         --lock "${RUNNER_LOCK}" \
@@ -259,9 +350,19 @@ verify_resources() {
 }
 
 start_test_container() {
-    local -a resource_args=()
+    local -a resource_args=() model_args=() optional_mounts=()
     local value uid gid
     while IFS= read -r -d '' value; do resource_args+=("${value}"); done < <(device_and_group_arguments)
+    while IFS= read -r -d '' value; do model_args+=("${value}"); done < <(model_mount_arguments)
+    if model_tests_required; then
+        [[ -d "${TEST_TOOL_ROOT}/.git" && -d "${CACHE_RUN_ROOT}" ]]
+        optional_mounts+=(
+            --mount "type=bind,src=${TEST_TOOL_ROOT},dst=/input/test-tool,readonly"
+            --mount "type=bind,src=${CACHE_RUN_ROOT}/localdisk,dst=/local_disk"
+            --mount "type=bind,src=${CACHE_RUN_ROOT}/ssd,dst=/ssd"
+            --mount "type=bind,src=${CACHE_RUN_ROOT}/posix,dst=/mnt/parastor_storage"
+        )
+    fi
     uid="$(id -u)"; gid="$(id -g)"
     docker run -d --name "${CONTAINER_NAME}" \
         --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
@@ -273,13 +374,17 @@ start_test_container() {
         --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 \
         --ulimit nofile=65536:65536 --ulimit fsize=1073741824:1073741824 --log-driver none \
         "${resource_args[@]}" \
+        "${model_args[@]}" \
+        "${optional_mounts[@]}" \
         --mount "type=bind,src=/opt/hyhal,dst=/opt/hyhal,readonly" \
         --mount "type=bind,src=${CONTROLLER_ROOT},dst=/opt/ci,readonly" \
         --mount "type=bind,src=${CHECKOUT_ROOT},dst=/input/source,readonly" \
         --mount "type=bind,src=${UPSTREAM_ASSET},dst=/input/upstream,readonly" \
         --env HIP_VISIBLE_DEVICES="${VISIBLE_DEVICES}" --env CUDA_VISIBLE_DEVICES="${VISIBLE_DEVICES}" \
-        --env HCU_CI_EXPECTED_DEVICE_COUNT="8" \
+        --env HCU_CI_EXPECTED_DEVICE_COUNT="$(visible_device_count)" \
         --env HCU_CI_PROFILE="${PROFILE}" --env HCU_CI_REPEAT="${REPEAT}" \
+        --env HCU_CI_MODEL_PROFILE="${MODEL_PROFILE}" --env HCU_CI_RUNNER_KIND="${RUNNER_KIND}" \
+        --env HCU_CI_TEST_TOOL_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["commit"])' "${MODEL_MANIFEST}")" \
         --env HCU_CI_SOURCE_SHA="${SOURCE_SHA}" --env HCU_CI_HCU_ARCH="${HCU_CI_HCU_ARCH:-}" \
         --entrypoint tail "${BASE_IMAGE}" -f /dev/null >/dev/null
     verify_resources
@@ -305,7 +410,7 @@ run_container_phase() {
     local log="${HOST_LOG_ROOT}/${phase}.log"
     mkdir -p "${HOST_LOG_ROOT}"
     set +e
-    timeout --signal=TERM --kill-after=60s 3000s \
+    timeout --signal=TERM --kill-after=60s "${PHASE_TIMEOUT_SECONDS}s" \
         docker exec "${CONTAINER_NAME}" bash /opt/ci/ci/hcu/run-tests.sh "${phase}" 2>&1 | \
         python3 "${HOST_HELPER}" capture-log --output "${log}" --limit 134217728
     local -a statuses=("${PIPESTATUS[@]}")
@@ -416,6 +521,16 @@ stop_gpu_lease() {
     rm -f -- "${pid_file}" "${TRUSTED_STATE_ROOT}/lease-ready"
 }
 
+cleanup_cache_run() {
+    [[ -n "${CACHE_RUN_ROOT}" ]] || return 0
+    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
+    [[ ! -L "${CACHE_RUN_ROOT}" ]]
+    if [[ -e "${CACHE_RUN_ROOT}" ]]; then
+        rm -rf -- "${CACHE_RUN_ROOT}"
+    fi
+    [[ ! -e "${CACHE_RUN_ROOT}" ]]
+}
+
 phase_initialize() {
     [[ ! -e "${WORK_ROOT}" ]]
     validate_job_status_file
@@ -444,6 +559,11 @@ phase_initialize() {
         return 2
     fi
     python3 "${HOST_HELPER}" state-init "${STATE_ARGS[@]}"
+    if ! fetch_test_tool >"${HOST_LOG_ROOT}/test-tool-fetch.log" 2>&1; then
+        python3 "${HOST_HELPER}" state-abort --state "${STATE_FILE}" \
+            --phase initialize --mapped-rc 3 --message 'fixed test tool fetch failed'
+        return 3
+    fi
     if ! start_gpu_lease >"${HOST_LOG_ROOT}/gpu-lease.log" 2>&1; then
         python3 "${HOST_HELPER}" state-abort --state "${STATE_FILE}" \
             --phase initialize --mapped-rc 3 --message 'GPU lease acquisition failed'
@@ -560,6 +680,7 @@ phase_finalize() {
     # device. A failed removal deliberately leaves the lease process alive so
     # another job cannot overlap; the isolated runner must then be reset.
     if [[ "${test_container_absent}" == "true" ]]; then
+        cleanup_cache_run >"${HOST_LOG_ROOT}/cache-cleanup.log" 2>&1 || cleanup_rc=10
         stop_gpu_lease || cleanup_rc=10
     fi
     # Clean up a lease container from an interrupted older controller version.
@@ -576,6 +697,8 @@ phase_finalize() {
     set +e
     python3 "${HOST_HELPER}" finalize \
         --spool "${TRUSTED_SPOOL}" --baseline "${CONTROLLER_ROOT}/ci/hcu/test-baseline.json" \
+        --model-manifest "${MODEL_MANIFEST}" --model-profile "${MODEL_PROFILE}" \
+        --runner-kind "${RUNNER_KIND}" \
         --repeat "${REPEAT}" --primary-rc "${primary_rc}" --cleanup-rc "${cleanup_rc}" \
         --repository "${REPOSITORY}" --profile "${PROFILE}" --run-id "${RUN_ID}" \
         --attempt "${ATTEMPT}" --sha "${SOURCE_SHA}" --controller-sha "${CONTROLLER_SHA}" \
