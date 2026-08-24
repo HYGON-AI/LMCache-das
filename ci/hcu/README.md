@@ -52,7 +52,7 @@ Profiles:
   checks; two visible devices, 60-minute workflow limit.
 - `framework`: repository pytest only; one visible device.
 - `qwen-smoke`: the two PR model scenarios; two visible devices.
-- `weekly-bw1100`: all registered Qwen, DeepSeek and GLM scenarios; eight
+- `weekly-bw1100`: all enabled Qwen and DeepSeek scenarios; eight
   visible devices.
 - `full`: alias of `weekly-bw1100` for manual dispatch.
 
@@ -116,10 +116,12 @@ The manifest registers:
 - long-document cache behavior, HumanEval/GSM8K OpenCompass accuracy and the
   reviewed long-prefix CMMLU case.
 
-Qwen is currently marked ready. DeepSeek and GLM remain explicitly blocked in
-the manifest until the SourceFind repository contains configs whose model path
-and tensor-parallel size match the cluster assets. Selecting a blocked weekly
-profile fails during test-tool validation; it is never silently skipped.
+Qwen and DeepSeek are marked ready. The cluster DeepSeek-R1-0528-W4A8-V2 asset
+is mounted at the reviewed container alias expected by the existing eight-GPU
+DeepSeek configuration, so the shared model directory is not modified. GLM
+remains declared but is not selected by any active profile until reviewed GLM
+configuration is available. Selecting a blocked model fails during test-tool
+validation; it is never silently skipped.
 
 The model runner treats process exit codes and JSON content as independent
 gates. Missing, duplicate, malformed or `failed` records fail the scenario even
