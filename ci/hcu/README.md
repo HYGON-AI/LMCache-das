@@ -71,10 +71,22 @@ LMCACHE_HCU_RUNNER_ISOLATED=true
 Required repository variables:
 
 ```text
-LMCACHE_HCU_BASE_IMAGE=<registry>/<repository>@sha256:<digest>
+LMCACHE_HCU_BASE_IMAGE=<reviewed image tag or registry digest>
+LMCACHE_HCU_BASE_IMAGE_ID=sha256:<immutable local image ID>
 LMCACHE_HCU_CACHE_ROOT_NMZ4=<dedicated path containing /lmcache-das/>
 LMCACHE_HCU_ARCH=<optional expected architecture reported by the image>
 ```
+
+Registry images should use an `@sha256:` digest. A reviewed image imported
+from a tar archive may use its tag, but the immutable Docker image ID remains
+mandatory and is checked before any container starts. The initial nmz4 image
+baseline is Python 3.10, Torch 2.9.0, vLLM 0.15.1, DTK 26.04, ABI 1 and
+`gfx938`.
+
+The initial tar image contains reviewed, pre-existing `pip check` conflicts.
+The wheel gate records `pip check` before and after installing the current
+wheel and requires the two results to remain byte-for-byte identical; any new
+or changed dependency conflict fails the run.
 
 Required read-only SourceFind credentials:
 
@@ -138,3 +150,10 @@ git diff --check
 Full wheel and model execution additionally require the reviewed image, nmz4
 cache root, model assets and SourceFind credentials. The implementation does
 not weaken a failed compatibility, packaging, patch, pytest or model gate.
+
+The pinned LMCache v0.3.13 server fixture assumes that its CPU server becomes
+ready within fifteen seconds.  The reviewed HCU image needs about twenty
+seconds to import the HCU runtime on BW1100.  CI therefore loads the trusted
+`lmcache_ci_pytest` support plugin, which changes only this fixture's readiness
+probe to a process-aware 60-second deadline.  Repository tests and upstream
+assertions are not modified or skipped.

@@ -16,12 +16,13 @@ readonly RUN_ID="${HCU_CI_RUN_ID:-local-$(date -u +%Y%m%d%H%M%S)}"
 readonly ATTEMPT="${HCU_CI_ATTEMPT:-1}"
 readonly REPOSITORY="${GITHUB_REPOSITORY:-HYGON-AI/LMCache-das}"
 readonly BASE_IMAGE="${HCU_CI_BASE_IMAGE:-}"
+readonly BASE_IMAGE_ID="${HCU_CI_BASE_IMAGE_ID:-}"
 readonly SHARED_ROOT="${HCU_CI_SHARED_ROOT:-/ci_public/lmcache-das}"
 readonly UPSTREAM_ASSET="${HCU_CI_UPSTREAM_SOURCE:-/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111}"
 readonly MODEL_MANIFEST="${CONTROLLER_ROOT}/ci/hcu/model-test-manifest.json"
 readonly MODEL_HELPER="${CONTROLLER_ROOT}/ci/hcu/model-ci.py"
 readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
-readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-runner-locks/nmz4-hygon-hcu-lmcache.lock}"
+readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock}"
 readonly CACHE_ROOT="${HCU_CI_CACHE_ROOT:-}"
 readonly RUNNER_TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
 readonly CONTAINER_MEMORY="${HCU_CI_CONTAINER_MEMORY:-56g}"
@@ -116,6 +117,7 @@ state_metadata_args() {
         --sha "${SOURCE_SHA}" \
         --controller-sha "${CONTROLLER_SHA}" \
         --base-image "${BASE_IMAGE}" \
+        --base-image-id "${BASE_IMAGE_ID}" \
         --run-key "${RUN_KEY}" \
         --repeat "${REPEAT}" \
         --checkout-status-sha256 "${SOURCE_STATUS_SHA256}"
@@ -271,7 +273,8 @@ host_preflight() {
     [[ "${CONTAINER_CPUS}" =~ ^[1-9][0-9]*$ ]]
     [[ "${OUTPUT_LIMIT}" =~ ^[1-9][0-9]*[gGmM]$ ]]
     [[ "${PHASE_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]{2,5}$ ]]
-    [[ "${BASE_IMAGE}" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]]
+    [[ "${BASE_IMAGE}" =~ ^[A-Za-z0-9._:/-]+(:[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$ ]]
+    [[ "${BASE_IMAGE_ID}" =~ ^sha256:[0-9a-f]{64}$ ]]
     [[ -d "${CHECKOUT_ROOT}/.git" && -d "${CONTROLLER_ROOT}/.git" ]]
     [[ -d "${UPSTREAM_ASSET}/.git" ]]
     [[ "$(readlink -m -- "${UPSTREAM_ASSET}")" == "/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/"* ]]
@@ -284,11 +287,17 @@ host_preflight() {
     validate_cache_root
     model_mount_arguments >/dev/null
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
-    [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-runner-locks/"* ]]
+    [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/"* ]]
     mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
-    docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1 || docker pull "${BASE_IMAGE}"
-    docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-        "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}"
+    if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
+        [[ "${BASE_IMAGE}" == *@sha256:* ]]
+        docker pull "${BASE_IMAGE}"
+    fi
+    [[ "$(docker image inspect --format '{{.Id}}' "${BASE_IMAGE}")" == "${BASE_IMAGE_ID}" ]]
+    if [[ "${BASE_IMAGE}" == *@sha256:* ]]; then
+        docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}"
+    fi
 }
 
 validate_configuration() {
@@ -299,7 +308,8 @@ validate_configuration() {
         "${BASE_IMAGE}" /opt/ci/ci/hcu/ci.py validate \
             --compatibility /opt/ci/ci/hcu/compatibility.json \
             --patch-manifest /opt/ci/ci/hcu/patch-manifest.json \
-            --base-image "${BASE_IMAGE}" --profile "${PROFILE}" \
+            --base-image "${BASE_IMAGE}" --base-image-id "${BASE_IMAGE_ID}" \
+            --profile "${PROFILE}" \
             --repeat "${REPEAT}" --checkout /input/source --upstream /input/upstream
 }
 
@@ -351,7 +361,7 @@ verify_resources() {
 
 start_test_container() {
     local -a resource_args=() model_args=() optional_mounts=()
-    local value uid gid
+    local value
     while IFS= read -r -d '' value; do resource_args+=("${value}"); done < <(device_and_group_arguments)
     while IFS= read -r -d '' value; do model_args+=("${value}"); done < <(model_mount_arguments)
     if model_tests_required; then
@@ -363,13 +373,12 @@ start_test_container() {
             --mount "type=bind,src=${CACHE_RUN_ROOT}/posix,dst=/mnt/parastor_storage"
         )
     fi
-    uid="$(id -u)"; gid="$(id -g)"
     docker run -d --name "${CONTAINER_NAME}" \
         --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
-        --network none --read-only --shm-size 16g --user "${uid}:${gid}" \
-        --tmpfs "/sandbox:rw,exec,nosuid,nodev,size=32g,uid=${uid},gid=${gid},mode=0750" \
-        --tmpfs "/tmp:rw,exec,nosuid,nodev,size=4g,uid=${uid},gid=${gid},mode=1770" \
-        --tmpfs "/output:rw,nosuid,nodev,size=${OUTPUT_LIMIT},uid=${uid},gid=${gid},mode=0750" \
+        --network none --read-only --shm-size 16g \
+        --tmpfs "/sandbox:rw,exec,nosuid,nodev,size=32g,mode=0750" \
+        --tmpfs "/tmp:rw,exec,nosuid,nodev,size=4g,mode=1770" \
+        --tmpfs "/output:rw,nosuid,nodev,size=${OUTPUT_LIMIT},mode=0750" \
         --memory "${CONTAINER_MEMORY}" --memory-swap "${CONTAINER_MEMORY}" --cpus "${CONTAINER_CPUS}" \
         --cap-drop ALL --security-opt no-new-privileges --pids-limit 4096 \
         --ulimit nofile=65536:65536 --ulimit fsize=1073741824:1073741824 --log-driver none \
@@ -430,16 +439,16 @@ run_container_phase() {
 }
 
 safe_import_output() {
-    local uid gid
-    uid="$(id -u)"; gid="$(id -g)"
     # The untrusted container is paused before import, freezing its output tree.
     # A trusted, device-less helper joins only its PID namespace and reads the
     # bounded /output tmpfs through /proc/1/root. SYS_PTRACE is needed because
-    # the target runs as the unprivileged runner uid; the helper has no network,
+    # the target runs in a separate container; the helper has no network,
     # source checkout, HCU device, Docker socket, or shared-results mount.
     docker run --rm --network none --read-only --entrypoint python3 \
-        --user "${uid}:${gid}" --pid "container:${CONTAINER_NAME}" \
-        --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges \
+        --pid "container:${CONTAINER_NAME}" \
+        --cap-drop ALL --cap-add SYS_PTRACE --cap-add DAC_OVERRIDE \
+        --cap-add CHOWN \
+        --security-opt no-new-privileges \
         --mount "type=bind,src=${CONTROLLER_ROOT},dst=/opt/ci,readonly" \
         --mount "type=bind,src=${TRUSTED_SPOOL},dst=/trusted" \
         "${BASE_IMAGE}" /opt/ci/ci/hcu/host.py safe-import \
@@ -503,8 +512,10 @@ stop_gpu_lease() {
         ready_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "${TRUSTED_STATE_ROOT}/lease-ready")" || return 1
         [[ "${ready_pid}" == "${lease_pid}" ]] || return 1
     fi
-    local command_line
-    command_line="$(tr '\0' ' ' <"/proc/${lease_pid}/cmdline" 2>/dev/null || true)"
+    local command_line=""
+    if [[ -r "/proc/${lease_pid}/cmdline" ]]; then
+        command_line="$(tr '\0' ' ' <"/proc/${lease_pid}/cmdline")"
+    fi
     if kill -0 "${lease_pid}" 2>/dev/null && \
        [[ "${command_line}" != *"${HOST_HELPER} hold-lock"* ]]; then
         return 1
@@ -702,7 +713,8 @@ phase_finalize() {
         --repeat "${REPEAT}" --primary-rc "${primary_rc}" --cleanup-rc "${cleanup_rc}" \
         --repository "${REPOSITORY}" --profile "${PROFILE}" --run-id "${RUN_ID}" \
         --attempt "${ATTEMPT}" --sha "${SOURCE_SHA}" --controller-sha "${CONTROLLER_SHA}" \
-        --base-image "${BASE_IMAGE}" --shared-root "${SHARED_ROOT}" --run-key "${RUN_KEY}" \
+        --base-image "${BASE_IMAGE}" --base-image-id "${BASE_IMAGE_ID}" \
+        --shared-root "${SHARED_ROOT}" --run-key "${RUN_KEY}" \
         --cleanup-root "${WORK_ROOT}"
     local final_rc=$?
     set -e
