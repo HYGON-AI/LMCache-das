@@ -36,6 +36,10 @@ TOP_LEVEL_FILES = {
     "patch-report.json",
     "test-inventory.json",
     "test-summary.json",
+    "model-tool.json",
+    "model-inventory.json",
+    "model-summary.json",
+    "asset-manifest.json",
     "summary.md",
 }
 
@@ -370,6 +374,10 @@ def allowed_output(relative, size):
         return name.endswith(".whl") and size <= MAX_WHEEL_BYTES
     if top == "state":
         return (name == "current-stage" or name.endswith(".rc")) and size <= 4096
+    if top == "model-results":
+        return name.endswith(".json") and size <= MAX_METADATA_BYTES
+    if top == "effective-configs":
+        return name.endswith(".conf") and size <= MAX_METADATA_BYTES
     return False
 
 
@@ -393,6 +401,8 @@ def scan_untrusted_tree(source):
                     "logs",
                     "wheels",
                     "state",
+                    "model-results",
+                    "effective-configs",
                 }:
                     raise HostError("Unexpected output directory: {}".format(relative))
                 stack.append(path)
@@ -565,7 +575,16 @@ def inventory_definition(nodeid):
     return file_path, "::".join(cleaned)
 
 
-def validate_success(spool, baseline_path, repeat):
+def resolved_model_profile(manifest, profile):
+    profiles = manifest.get("profiles", {})
+    if profile not in profiles:
+        raise HostError("unknown model profile {}".format(profile))
+    value = profiles[profile]
+    inherited = value.get("inherits")
+    return profiles[inherited] if inherited else value
+
+
+def validate_success(spool, baseline_path, repeat, model_manifest_path, model_profile, runner_kind):
     required = [
         "environment.json",
         "upstream-source.json",
@@ -574,6 +593,9 @@ def validate_success(spool, baseline_path, repeat):
         "patch-report.json",
         "test-inventory.json",
         "test-summary.json",
+        "model-inventory.json",
+        "model-summary.json",
+        "asset-manifest.json",
     ]
     problems = []
     for relative in required:
@@ -643,7 +665,68 @@ def validate_success(spool, baseline_path, repeat):
         problems.append("container aggregate repeat count differs from requested repeat")
     if int(test_summary.get("expected_total", -1)) != expected * repeat:
         problems.append("container aggregate total count differs from trusted expectation")
-    return problems, {"collected": expected, "repeats": repeat_stats}
+    model_manifest = read_json(model_manifest_path)
+    if model_manifest.get("runner") != runner_kind:
+        problems.append("model manifest runner differs from the workflow runner")
+    profile = resolved_model_profile(model_manifest, model_profile)
+    model_expected_ids = []
+    for repeat_index in range(1, repeat + 1):
+        for item in profile.get("runs", []):
+            model_expected_ids.append("{}-repeat-{}".format(item["scenario"], repeat_index))
+    if model_expected_ids and not (spool / "model-tool.json").is_file():
+        problems.append("missing model-tool.json for a model-enabled profile")
+    model_inventory = read_json(spool / "model-inventory.json")
+    model_nodeids = model_inventory.get("nodeids")
+    if model_nodeids != model_expected_ids:
+        problems.append("model inventory differs from the trusted manifest selection")
+    if int(model_inventory.get("count", -1)) != len(model_expected_ids):
+        problems.append("model inventory count differs from the trusted expectation")
+    model_junit = spool / "reports" / "model-junit.xml"
+    if not model_junit.is_file():
+        problems.append("missing reports/model-junit.xml")
+    else:
+        try:
+            model_stats = junit_stats(model_junit)
+            if model_stats["tests"] != len(model_expected_ids):
+                problems.append("model JUnit count differs from the trusted expectation")
+            if model_stats["failures"] or model_stats["errors"] or model_stats["skipped"]:
+                problems.append(
+                    "model failures={} errors={} skipped={}".format(
+                        model_stats["failures"], model_stats["errors"], model_stats["skipped"]
+                    )
+                )
+        except HostError as exc:
+            problems.append(str(exc))
+    model_summary = read_json(spool / "model-summary.json")
+    if model_summary.get("status") != "passed":
+        problems.append("model test summary did not pass")
+    if int(model_summary.get("expected", -1)) != len(model_expected_ids):
+        problems.append("model summary count differs from the trusted expectation")
+    if model_summary.get("profile") != model_profile or model_summary.get("runner") != runner_kind:
+        problems.append("model summary profile or runner differs from the workflow")
+    asset_manifest = read_json(spool / "asset-manifest.json")
+    if asset_manifest.get("profile") != model_profile or asset_manifest.get("runner") != runner_kind:
+        problems.append("asset manifest profile or runner differs from the workflow")
+    expected_tool_commit = model_manifest.get("tool", {}).get("commit")
+    if model_expected_ids and asset_manifest.get("tool_commit") != expected_tool_commit:
+        problems.append("asset manifest test-tool commit differs from the trusted manifest")
+    expected_result_files = set("{}.json".format(item) for item in model_expected_ids)
+    actual_result_files = set(
+        path.name for path in (spool / "model-results").glob("*.json")
+    ) if (spool / "model-results").is_dir() else set()
+    if actual_result_files != expected_result_files:
+        problems.append("raw model result files differ from the trusted scenario inventory")
+    expected_config_files = set("{}.conf".format(item) for item in model_expected_ids)
+    actual_config_files = set(
+        path.name for path in (spool / "effective-configs").glob("*.conf")
+    ) if (spool / "effective-configs").is_dir() else set()
+    if actual_config_files != expected_config_files:
+        problems.append("effective model config files differ from the trusted scenario inventory")
+    return problems, {
+        "collected": expected,
+        "repeats": repeat_stats,
+        "model_cases": len(model_expected_ids),
+    }
 
 
 def copy_trusted_tree(source, destination):
@@ -806,7 +889,14 @@ def cmd_finalize(args):
     primary_rc = args.primary_rc
     if primary_rc == 0:
         try:
-            problems, details = validate_success(spool, args.baseline, args.repeat)
+            problems, details = validate_success(
+                spool,
+                args.baseline,
+                args.repeat,
+                args.model_manifest,
+                args.model_profile,
+                args.runner_kind,
+            )
         except Exception as exc:
             problems = ["host result validation failed: {}".format(exc)]
         if problems:
@@ -839,6 +929,7 @@ def cmd_finalize(args):
     ]
     if details:
         summary.append("- Collected tests: `{}`".format(details["collected"]))
+        summary.append("- Model cases: `{}`".format(details["model_cases"]))
     if problems:
         summary.extend(["", "## Host validation failures", ""])
         summary.extend("- {}".format(item) for item in problems)
@@ -848,6 +939,8 @@ def cmd_finalize(args):
         "schema_version": 1,
         "repository": args.repository,
         "profile": args.profile,
+        "model_profile": args.model_profile,
+        "runner_kind": args.runner_kind,
         "run_id": args.run_id,
         "attempt": args.attempt,
         "source_sha": args.sha,
@@ -1028,6 +1121,9 @@ def parser():
     final = commands.add_parser("finalize")
     final.add_argument("--spool", required=True)
     final.add_argument("--baseline", required=True)
+    final.add_argument("--model-manifest", required=True)
+    final.add_argument("--model-profile", required=True)
+    final.add_argument("--runner-kind", required=True)
     final.add_argument("--repeat", type=int, required=True)
     final.add_argument("--primary-rc", type=int, required=True)
     final.add_argument("--cleanup-rc", type=int, required=True)

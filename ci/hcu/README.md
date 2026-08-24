@@ -1,46 +1,13 @@
-# LMCache-HCU PR CI
+# LMCache-HCU CI
 
-This directory contains the platform-neutral controller used by the HCU PR and
-manual GitHub Actions workflows. The first release intentionally runs every
-pytest test discovered under the repository `tests/` directory in one process.
-The BW18 runner exposes all eight HCU devices by default, matching the SGLang
-runner resource model, although the current tests do not yet claim multi-device
-coverage. It does not claim to run the complete upstream LMCache test tree.
+This directory contains the trusted controller shared by the PR, manual and
+weekly GitHub Actions workflows. The first release runs the complete pytest
+inventory under the repository `tests/` directory and the reviewed model
+scenarios declared in `model-test-manifest.json`.
 
-## Execution contract
+## Execution model
 
-- The host controller is loaded from a protected branch.
-- The fixed-digest base image is part of the trusted computing base: it runs
-  the reviewed helper that imports the frozen, read-only test output into the
-  host spool. Activating CI therefore requires review and locking of that digest.
-- The selected PR/ref checkout and the fixed upstream LMCache source are mounted
-  read-only into a network-disabled container.
-- The container creates disposable source copies, builds one wheel from the
-  selected SHA, installs that wheel, validates both source patches, collects all
-  repository tests, and executes the complete inventory.
-- GitHub Actions exposes the execution as seven readable steps: two trusted
-  checkouts, preflight/initialization, wheel build and validation, patch/test
-  preparation, pytest execution, and an always-run cleanup/publication step.
-  The four HCU phases use one restricted container, so the selected commit is
-  compiled exactly once and the same wheel and virtual environment are reused.
-- A minimal trusted host lease process holds the dedicated runner lock for the
-  complete job while GitHub moves between workflow steps. The lease receives no source, device,
-  output, network, or shared-results access.
-- Because the current `setup.py` package discovery would include `tests/`, the
-  controller first copies the full test tree to its execution directory and
-  removes it only from the disposable build copy. The checkout and business
-  packaging files are not changed, and the wheel gate still forbids test files.
-- Container output is written to a per-run, size-bounded `/output` tmpfs
-  (3 GiB by default). Finalization pauses the test container and a device-less,
-  network-disabled trusted helper reads that frozen tree through its PID
-  namespace. `host.py` imports it into a trusted spool only after
-  rejecting symlinks, hard links, special files, unexpected paths, and output
-  above the stricter 2 GiB publication limit.
-- The trusted host validator checks the committed minimum test inventory, JUnit
-  counts, skips, patch report, cleanup, checksums, and atomic `/ci_public`
-  publication before creating `READY`.
-
-The Actions page shows these steps:
+GitHub Actions exposes one job as seven readable steps:
 
 ```text
 Checkout trusted CI controller
@@ -52,61 +19,122 @@ Run HCU test suite
 Cleanup, validate and publish
 ```
 
-The final step uses `if: always()`. The four compute phases use
-`!cancelled()`, so a cancelled superseded run does not start another expensive
-phase while cleanup still gets a chance to run. Finalization restores temporary
-patches, imports the bounded output, removes the test and legacy lease
-containers, releases the runner lock, validates the reports, and publishes the run. The
-runner lease is released only after the test container is confirmed absent; if
-Docker cannot remove it, the lease remains held and the isolated runner must be
-reset. A prior build or test failure remains visible on its own step;
-cleanup/publication does not hide it.
+The trusted controller comes from the protected target branch. The selected PR
+merge or manual revision is mounted read-only into a restricted container. A
+disposable source copy is used to build exactly one wheel, and that same wheel
+and virtual environment are reused for source-patch checks, pytest and model
+tests. The original checkout is never built in place.
 
-The default device selection is `0,1,2,3,4,5,6,7`. It can be changed through
-the reviewed repository variable `LMCACHE_HCU_VISIBLE_DEVICES`. The current
-preflight requires all eight cards and rejects duplicates, out-of-range
-ordinals, missing device nodes, or an unexpected visible-device count. As in SGLang,
-`HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES` select the cards;
-`ROCR_VISIBLE_DEVICES` is not forced.
+The fixed SourceFind test tool is fetched by the trusted host controller with a
+temporary `GIT_ASKPASS` helper. Its username and token are never mounted into
+the test container. The reviewed checkout is pinned to the commit in
+`model-test-manifest.json`; the CI never follows a moving branch and never
+executes arbitrary commands from `case_list`.
 
-The workflow is pinned to the registered `bw18-hygon-hcu-lmcache` runner by
-requiring all of these labels:
+Container output is written to a size-bounded tmpfs. Finalization freezes the
+container, rejects links, special files, unexpected paths and oversized output,
+then imports regular files into a trusted spool. The host independently checks
+pytest inventory/JUnit, model inventory/JUnit, structured test-tool results,
+patch cleanup and checksums before publishing `READY` last.
+
+## Runner and profiles
+
+All HCU workflows use only this registered runner:
 
 ```text
-self-hosted, Linux, X64, hcu, bw1000, hcu-ci-pr, bw18
+nmz4-hygon-hcu-lmcache
+self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4
 ```
 
-It remains inactive until these three repository variables are configured:
+Profiles:
+
+- `pr`: repository pytest plus Qwen3-8B LocalDisk and POSIX long-document
+  checks; two visible devices, 60-minute workflow limit.
+- `framework`: repository pytest only; one visible device.
+- `qwen-smoke`: the two PR model scenarios; two visible devices.
+- `weekly-bw1100`: all registered Qwen, DeepSeek and GLM scenarios; eight
+  visible devices.
+- `full`: alias of `weekly-bw1100` for manual dispatch.
+
+The runner lock is held for the complete job, including two-device profiles, so
+another repository job cannot use the remaining cards concurrently.
+
+## Configuration
+
+The workflows remain skipped until both variables are true:
 
 ```text
 LMCACHE_HCU_CI_ENABLED=true
 LMCACHE_HCU_RUNNER_ISOLATED=true
-LMCACHE_HCU_BASE_IMAGE=<registry>/<repository>@sha256:<digest>
 ```
 
-`LMCACHE_HCU_RUNNER_ISOLATED=true` is a security assertion, not merely a feature
-flag. The runner must contain no secrets, expose no internal credentials to the
-test container, and be reset after every untrusted PR job.
+Required repository variables:
 
-The fixed upstream source must be available at:
+```text
+LMCACHE_HCU_BASE_IMAGE=<registry>/<repository>@sha256:<digest>
+LMCACHE_HCU_CACHE_ROOT_NMZ4=<dedicated path containing /lmcache-das/>
+LMCACHE_HCU_ARCH=<optional expected architecture reported by the image>
+```
+
+Required read-only SourceFind credentials:
+
+```text
+LMCACHE_TEST_TOOL_USERNAME
+LMCACHE_TEST_TOOL_TOKEN
+```
+
+The fixed upstream source is read from:
 
 ```text
 /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111/
 ```
 
-It must be a clean Git checkout at tag `v0.3.13`; the controller never modifies
-it directly.
+Each run creates only one cache subtree below the configured nmz4 root. The
+controller probes LocalDisk, SSD and POSIX subdirectories with direct I/O,
+mounts them as `/local_disk`, `/ssd` and `/mnt/parastor_storage`, and removes
+only the current run subtree after the test container is confirmed absent.
 
-## Local checks
+## Registered model tests
 
-Run on a Linux host with Python 3.6+:
+The manifest registers:
+
+- Qwen3-8B: CPU, LocalDisk and POSIX.
+- DeepSeek-R1-0528-W4A8-V2: CPU, LocalDisk and POSIX.
+- GLM-5: LocalDisk and POSIX.
+- long-document cache behavior, HumanEval/GSM8K OpenCompass accuracy and the
+  reviewed long-prefix CMMLU case.
+
+Qwen is currently marked ready. DeepSeek and GLM remain explicitly blocked in
+the manifest until the SourceFind repository contains configs whose model path
+and tensor-parallel size match the cluster assets. Selecting a blocked weekly
+profile fails during test-tool validation; it is never silently skipped.
+
+The model runner treats process exit codes and JSON content as independent
+gates. Missing, duplicate, malformed or `failed` records fail the scenario even
+when the developer script exits zero. Every scenario/repetition becomes one
+JUnit testcase.
+
+## Reports
+
+Results are atomically published under:
+
+```text
+/ci_public/lmcache-das/<pr|manual|weekly>/<run-id>/<attempt>/<sha>/
+```
+
+The archive includes the wheel, pytest and model JUnit, raw model JSON,
+effective configs, logs, environment, test and model inventories, patch report,
+asset manifest, summary, checksums and `READY`.
+
+## Static verification
+
+Run on Linux with Python 3.10+:
 
 ```bash
 bash ci/hcu/selftest.sh
 git diff --check
 ```
 
-Full wheel, patch, and pytest validation additionally requires the reviewed HCU
-base image and one registered HCU runner. A clean build failure is reported as a
-build-stage failure; the CI does not generate or copy missing native sources to
-hide a packaging defect.
+Full wheel and model execution additionally require the reviewed image, nmz4
+cache root, model assets and SourceFind credentials. The implementation does
+not weaken a failed compatibility, packaging, patch, pytest or model gate.
