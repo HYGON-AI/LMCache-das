@@ -44,6 +44,7 @@ REPORT_ROOT=""
 STATE_FILE=""
 CONTAINER_NAME=""
 LEASE_CONTAINER=""
+NETWORK_NAME=""
 TEST_TOOL_ROOT=""
 CACHE_RUN_ROOT=""
 SOURCE_STATUS=""
@@ -101,6 +102,7 @@ resolve_context() {
     STATE_FILE="${TRUSTED_STATE_ROOT}/state.json"
     CONTAINER_NAME="lmcache-hcu-ci-${RUN_KEY}"
     LEASE_CONTAINER="lmcache-hcu-lease-${RUN_KEY}"
+    NETWORK_NAME="lmcache-hcu-net-${RUN_KEY}"
     TEST_TOOL_ROOT="${TRUSTED_STATE_ROOT}/test-tool"
     if [[ -n "${CACHE_ROOT}" ]]; then
         CACHE_RUN_ROOT="${CACHE_ROOT}/${RUN_KEY}"
@@ -356,11 +358,12 @@ verify_resources() {
 
 start_test_container() {
     local -a resource_args=() model_args=() optional_mounts=()
-    local value
+    local value network_name="none"
     while IFS= read -r -d '' value; do resource_args+=("${value}"); done < <(device_and_group_arguments)
     while IFS= read -r -d '' value; do model_args+=("${value}"); done < <(model_mount_arguments)
     if model_tests_required; then
         [[ -d "${TEST_TOOL_ROOT}/.git" && -d "${CACHE_RUN_ROOT}" ]]
+        network_name="${NETWORK_NAME}"
         optional_mounts+=(
             --mount "type=bind,src=${TEST_TOOL_ROOT},dst=/input/test-tool,readonly"
             --mount "type=bind,src=${CACHE_RUN_ROOT}/localdisk,dst=/local_disk"
@@ -370,7 +373,7 @@ start_test_container() {
     fi
     docker run -d --name "${CONTAINER_NAME}" \
         --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
-        --network none --read-only --shm-size 16g \
+        --network "${network_name}" --read-only --shm-size 16g \
         --tmpfs "/sandbox:rw,exec,nosuid,nodev,size=32g,mode=0750" \
         --tmpfs "/tmp:rw,exec,nosuid,nodev,size=4g,mode=1770" \
         --tmpfs "/output:rw,nosuid,nodev,size=${OUTPUT_LIMIT},mode=0750" \
@@ -527,6 +530,30 @@ stop_gpu_lease() {
     rm -f -- "${pid_file}" "${TRUSTED_STATE_ROOT}/lease-ready"
 }
 
+create_internal_network() {
+    model_tests_required || return 0
+    docker network create --internal \
+        --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
+        "${NETWORK_NAME}" >/dev/null
+}
+
+cleanup_internal_network() {
+    model_tests_required || return 0
+    local output rc label
+    set +e
+    output="$(docker network inspect "${NETWORK_NAME}" 2>&1)"; rc=$?
+    set -e
+    if (( rc != 0 )); then
+        grep -Fqi 'no such network' <<<"${output}"
+        return $?
+    fi
+    label="$(docker network inspect -f \
+        '{{ index .Labels "lmcache-hcu-ci.run-key" }}' \
+        "${NETWORK_NAME}")" || return 1
+    [[ "${label}" == "${RUN_KEY}" ]] || return 1
+    docker network rm "${NETWORK_NAME}" >/dev/null
+}
+
 cleanup_cache_run() {
     [[ -n "${CACHE_RUN_ROOT}" ]] || return 0
     ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
@@ -573,6 +600,11 @@ phase_initialize() {
     if ! start_gpu_lease >"${HOST_LOG_ROOT}/gpu-lease.log" 2>&1; then
         python3 "${HOST_HELPER}" state-abort --state "${STATE_FILE}" \
             --phase initialize --mapped-rc 3 --message 'GPU lease acquisition failed'
+        return 3
+    fi
+    if ! create_internal_network >"${HOST_LOG_ROOT}/network-create.log" 2>&1; then
+        python3 "${HOST_HELPER}" state-abort --state "${STATE_FILE}" \
+            --phase initialize --mapped-rc 3 --message 'internal test network creation failed'
         return 3
     fi
     if ! start_test_container >"${HOST_LOG_ROOT}/container-start.log" 2>&1; then
@@ -686,6 +718,7 @@ phase_finalize() {
     # device. A failed removal deliberately leaves the lease process alive so
     # another job cannot overlap; the isolated runner must then be reset.
     if [[ "${test_container_absent}" == "true" ]]; then
+        cleanup_internal_network >"${HOST_LOG_ROOT}/network-cleanup.log" 2>&1 || cleanup_rc=10
         cleanup_cache_run >"${HOST_LOG_ROOT}/cache-cleanup.log" 2>&1 || cleanup_rc=10
         stop_gpu_lease || cleanup_rc=10
     fi
