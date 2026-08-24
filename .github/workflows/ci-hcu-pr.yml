@@ -29,17 +29,20 @@ jobs:
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
-    runs-on: [self-hosted, Linux, X64, hcu, bw1000, hcu-ci-pr, bw18]
+    runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
     timeout-minutes: 60
     env:
       HCU_CI_PROFILE: pr
+      HCU_CI_MODEL_PROFILE: pr
+      HCU_CI_RUNNER_KIND: nmz4
       HCU_CI_REPEAT: "1"
       HCU_CI_BASE_IMAGE: ${{ vars.LMCACHE_HCU_BASE_IMAGE }}
       HCU_CI_ISOLATED_RUNNER: ${{ vars.LMCACHE_HCU_RUNNER_ISOLATED }}
       HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
       HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
-      HCU_CI_VISIBLE_DEVICES: ${{ vars.LMCACHE_HCU_VISIBLE_DEVICES || '0,1,2,3,4,5,6,7' }}
-      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-runner-locks/bw18-hygon-hcu-lmcache.lock
+      HCU_CI_VISIBLE_DEVICES: 0,1
+      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-runner-locks/nmz4-hygon-hcu-lmcache.lock
+      HCU_CI_CACHE_ROOT: ${{ vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 }}
       HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
       HCU_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
       HCU_CI_EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -48,6 +51,7 @@ jobs:
       HCU_CI_ATTEMPT: ${{ github.run_attempt }}
       HCU_CI_CONTAINER_MEMORY: 56g
       HCU_CI_CONTAINER_CPUS: "32"
+      HCU_CI_PHASE_TIMEOUT_SECONDS: "3000"
     steps:
       - name: Checkout trusted CI controller
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -74,6 +78,8 @@ jobs:
           HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
           HCU_CI_CHECKOUT: ${{ github.workspace }}/source
           HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
+          HCU_CI_TEST_TOOL_USERNAME: ${{ secrets.LMCACHE_TEST_TOOL_USERNAME }}
+          HCU_CI_TEST_TOOL_TOKEN: ${{ secrets.LMCACHE_TEST_TOOL_TOKEN }}
           HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
         run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
 

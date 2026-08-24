@@ -125,7 +125,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             raise CIError(f"Patch target {target['module']} must be required")
         if not re.fullmatch(r"[0-9a-f]{64}", target["preimage_sha256"]):
             raise CIError(f"Invalid preimage SHA for {target['module']}")
-    if args.profile not in {"pr", "manual"}:
+    if args.profile not in {"pr", "manual", "weekly"}:
         raise CIError(f"Unsupported profile: {args.profile}")
     if args.repeat not in {1, 2, 3}:
         raise CIError("repeat must be 1, 2, or 3")
