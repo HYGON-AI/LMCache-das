@@ -377,7 +377,7 @@ start_test_container() {
             --mount "type=bind,src=${CACHE_RUN_ROOT}/posix,dst=/mnt/parastor_storage"
         )
     fi
-    docker run -d --name "${CONTAINER_NAME}" \
+    docker run -d --init --name "${CONTAINER_NAME}" \
         --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
         --network "${network_name}" --read-only --shm-size 16g \
         --tmpfs "/sandbox:rw,exec,nosuid,nodev,size=32g,mode=0750" \
