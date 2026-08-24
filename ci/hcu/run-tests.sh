@@ -53,9 +53,20 @@ configure_environment() {
     export XDG_CACHE_HOME="${SANDBOX_ROOT}/cache"
     export HF_HOME="${SANDBOX_ROOT}/cache/huggingface"
     export PIP_CACHE_DIR="${SANDBOX_ROOT}/cache/pip"
+    export HOME="${SANDBOX_ROOT}/home"
+    export TMPDIR="${SANDBOX_ROOT}/tmp"
     export LMCACHEPATH="${UPSTREAM_ROOT}"
     export PYTHONHASHSEED=0
     export PYTHONDONTWRITEBYTECODE=1
+    export GIT_CONFIG_GLOBAL="${SANDBOX_ROOT}/gitconfig"
+    mkdir -p "${HOME}" "${TMPDIR}"
+    cat >"${GIT_CONFIG_GLOBAL}" <<'EOF'
+[safe]
+    directory = /input/source/.git
+    directory = /input/upstream/.git
+    directory = /input/test-tool/.git
+EOF
+    chmod 0600 "${GIT_CONFIG_GLOBAL}"
 }
 
 write_synthetic_junit() {
@@ -110,7 +121,10 @@ prepare_sandbox() {
         [[ "$(git -C "${TEST_TOOL_ROOT}" rev-parse HEAD)" == "${HCU_CI_TEST_TOOL_COMMIT}" ]]
     fi
 
-    python3 -m venv --system-site-packages "${VENV_ROOT}"
+    # The reviewed runtime image intentionally omits the distro ensurepip
+    # payload. Reuse its pinned system pip through system-site-packages rather
+    # than downloading or installing python3-venv during CI.
+    python3 -m venv --system-site-packages --without-pip "${VENV_ROOT}"
     # shellcheck disable=SC1091
     source "${VENV_ROOT}/bin/activate"
     [[ "$(python3 -c 'import sys; print(sys.prefix)')" == "${VENV_ROOT}" ]]
@@ -183,11 +197,31 @@ build_wheel() {
 }
 
 install_current_wheel() {
-    local wheel
+    local wheel baseline_rc after_rc
     wheel="$(find "${WHEEL_ROOT}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
     [[ -n "${wheel}" ]]
+    set +e
+    python3 -m pip check >"${LOG_ROOT}/pip-check-before-wheel.log" 2>&1
+    baseline_rc=$?
+    set -e
     python3 -m pip install --no-deps --force-reinstall "${wheel}"
-    python3 -m pip check
+    set +e
+    python3 -m pip check >"${LOG_ROOT}/pip-check-after-wheel.log" 2>&1
+    after_rc=$?
+    set -e
+    if (( baseline_rc == 0 )); then
+        (( after_rc == 0 )) || return 1
+    else
+        (( after_rc == baseline_rc )) || return 1
+        cmp -s "${LOG_ROOT}/pip-check-before-wheel.log" \
+            "${LOG_ROOT}/pip-check-after-wheel.log" || {
+            diff -u "${LOG_ROOT}/pip-check-before-wheel.log" \
+                "${LOG_ROOT}/pip-check-after-wheel.log" || true
+            return 1
+        }
+        printf '%s\n' \
+            'The reviewed base image has unchanged pre-existing pip conflicts.'
+    fi
 }
 
 execute_repeat() {

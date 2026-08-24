@@ -31,11 +31,12 @@ jobs:
       HCU_CI_RUNNER_KIND: nmz4
       HCU_CI_REPEAT: "1"
       HCU_CI_BASE_IMAGE: ${{ vars.LMCACHE_HCU_BASE_IMAGE }}
+      HCU_CI_BASE_IMAGE_ID: ${{ vars.LMCACHE_HCU_BASE_IMAGE_ID }}
       HCU_CI_ISOLATED_RUNNER: ${{ vars.LMCACHE_HCU_RUNNER_ISOLATED }}
       HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
       HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
       HCU_CI_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
-      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-runner-locks/nmz4-hygon-hcu-lmcache.lock
+      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock
       HCU_CI_CACHE_ROOT: ${{ vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 }}
       HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
       HCU_CI_RUN_ID: ${{ github.run_id }}
