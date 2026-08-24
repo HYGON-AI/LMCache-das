@@ -229,6 +229,17 @@ install_current_wheel() {
     fi
 }
 
+install_vllm_entrypoint() {
+    local system_vllm wrapper
+    system_vllm="$(PATH=/usr/local/bin:/usr/bin:/bin command -v vllm)"
+    [[ -n "${system_vllm}" && -f "${system_vllm}" ]]
+    wrapper="${VENV_ROOT}/bin/vllm"
+    printf '#!/bin/sh\nexec "%s/bin/python3" "%s" "$@"\n' \
+        "${VENV_ROOT}" "${system_vllm}" >"${wrapper}"
+    chmod 0755 "${wrapper}"
+    [[ "$(command -v vllm)" == "${wrapper}" ]]
+}
+
 execute_repeat() {
     local repeat="$1"
     local stage="test-repeat-${repeat}"
@@ -302,6 +313,7 @@ phase_build() {
             --sha "${HCU_CI_SOURCE_SHA}" \
             --output "${OUTPUT_ROOT}/wheel-report.json" || return $?
     run_phase wheel-install 5 install_current_wheel || return $?
+    run_phase vllm-entrypoint 5 install_vllm_entrypoint || return $?
     run_phase installed-package 5 \
         python3 "${CI_HELPER}" verify-install \
             --sha "${HCU_CI_SOURCE_SHA}" \
