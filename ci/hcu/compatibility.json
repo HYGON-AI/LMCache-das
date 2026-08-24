@@ -6,10 +6,10 @@
     "source_tag": "v0.3.13"
   },
   "vllm": {
-    "version": "0.15.0"
+    "version": "0.15.1"
   },
   "torch": {
-    "version": "2.8.0"
+    "version": "2.9.0"
   },
   "python": {
     "minimum": "3.10",

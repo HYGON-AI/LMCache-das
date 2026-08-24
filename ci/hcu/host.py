@@ -87,6 +87,7 @@ def state_metadata(args):
         "source_sha": args.sha,
         "controller_sha": args.controller_sha,
         "base_image": args.base_image,
+        "base_image_id": args.base_image_id,
         "run_key": args.run_key,
         "repeat": args.repeat,
         "checkout_status_sha256": args.checkout_status_sha256,
@@ -464,12 +465,18 @@ def safe_import(source, destination, preserve_source_path=False):
     source = Path(source) if preserve_source_path else Path(source).resolve()
     destination = Path(destination).resolve()
     destination.mkdir(mode=0o750, parents=True, exist_ok=True)
+    destination_stat = os.stat(str(destination))
+    destination_uid = destination_stat.st_uid
+    destination_gid = destination_stat.st_gid
     imported = []
     for path, relative, size in scan_untrusted_tree(source):
         target = destination / relative
         if not is_within(target.parent, destination):
             raise HostError("Output path escaped destination: {}".format(relative))
         copy_regular_no_follow(path, target, size)
+        if hasattr(os, "chown"):
+            os.chown(str(target.parent), destination_uid, destination_gid)
+            os.chown(str(target), destination_uid, destination_gid)
         imported.append(
             {
                 "path": relative.as_posix(),
@@ -477,7 +484,10 @@ def safe_import(source, destination, preserve_source_path=False):
                 "sha256": sha256_file(target),
             }
         )
-    atomic_json(destination / "import-report.json", {"files": imported})
+    import_report = destination / "import-report.json"
+    atomic_json(import_report, {"files": imported})
+    if hasattr(os, "chown"):
+        os.chown(str(import_report), destination_uid, destination_gid)
     return imported
 
 
@@ -946,6 +956,7 @@ def cmd_finalize(args):
         "source_sha": args.sha,
         "controller_sha": args.controller_sha,
         "base_image": args.base_image,
+        "base_image_id": args.base_image_id,
         "primary_exit_code": primary_rc,
         "cleanup_exit_code": args.cleanup_rc,
         "publish_exit_code": 0,
@@ -1041,6 +1052,7 @@ def parser():
         command.add_argument("--sha", required=True)
         command.add_argument("--controller-sha", required=True)
         command.add_argument("--base-image", required=True)
+        command.add_argument("--base-image-id", required=True)
         command.add_argument("--run-key", required=True)
         command.add_argument("--repeat", type=int, required=True)
         command.add_argument("--checkout-status-sha256", required=True)
@@ -1134,6 +1146,7 @@ def parser():
     final.add_argument("--sha", required=True)
     final.add_argument("--controller-sha", required=True)
     final.add_argument("--base-image", required=True)
+    final.add_argument("--base-image-id", required=True)
     final.add_argument("--shared-root", required=True)
     final.add_argument("--run-key", required=True)
     final.add_argument("--cleanup-root", required=True)
