@@ -179,21 +179,26 @@ prepare_build_tree() {
 
 build_wheel() {
     rm -f "${WHEEL_ROOT}"/*.whl
-    env \
-        BUILD_WITH_HIP=1 \
-        CXX=hipcc \
-        ROCM_HOME=/opt/dtk \
-        ROCM_PATH=/opt/dtk \
-        DTK_HOME=/opt/dtk \
-        HCU_ARCH="${DETECTED_ARCH}" \
-        PYTORCH_ROCM_ARCH="${DETECTED_ARCH}" \
-        ENABLE_CXX11_ABI="${DETECTED_ABI}" \
-        TORCH_DONT_CHECK_COMPILER_ABI=1 \
-        MAX_JOBS=8 \
-        python3 -m pip wheel "${SOURCE_ROOT}" \
-            --no-build-isolation \
-            --no-deps \
-            --wheel-dir "${WHEEL_ROOT}"
+    (
+        cd "${SOURCE_ROOT}"
+        # setup.py derives the package version from the current minute.
+        # A PEP 517 frontend may prepare metadata and build the wheel in
+        # different minutes, producing an internally inconsistent filename.
+        # Build once in this disposable source copy so one setup invocation
+        # owns both the metadata and wheel version.
+        env \
+            BUILD_WITH_HIP=1 \
+            CXX=hipcc \
+            ROCM_HOME=/opt/dtk \
+            ROCM_PATH=/opt/dtk \
+            DTK_HOME=/opt/dtk \
+            HCU_ARCH="${DETECTED_ARCH}" \
+            PYTORCH_ROCM_ARCH="${DETECTED_ARCH}" \
+            ENABLE_CXX11_ABI="${DETECTED_ABI}" \
+            TORCH_DONT_CHECK_COMPILER_ABI=1 \
+            MAX_JOBS=8 \
+            python3 setup.py bdist_wheel --dist-dir "${WHEEL_ROOT}"
+    )
 }
 
 install_current_wheel() {
