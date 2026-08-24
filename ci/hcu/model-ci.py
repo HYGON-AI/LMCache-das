@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -23,6 +24,8 @@ class ModelCIError(RuntimeError):
 ALLOWED_CHECKS = {"long_doc", "opencompass", "cmmlu"}
 TOKEN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+TEST_TOOL_ASSET_ROOT = "/ci_public/lmcache-das/assets/test-tool/"
 
 
 def read_json(path):
@@ -84,8 +87,11 @@ def validate_manifest(manifest):
     tool = manifest.get("tool")
     if not isinstance(tool, dict) or not COMMIT.match(str(tool.get("commit", ""))):
         raise ModelCIError("the test tool must be pinned to a 40-character commit")
-    if not str(tool.get("url", "")).startswith("https://developer.sourcefind.cn/"):
-        raise ModelCIError("the test tool URL is outside the reviewed SourceFind host")
+    archive = str(tool.get("archive", ""))
+    if not archive.startswith(TEST_TOOL_ASSET_ROOT) or not archive.endswith(".tar"):
+        raise ModelCIError("the test-tool archive is outside the reviewed asset root")
+    if not SHA256.match(str(tool.get("archive_sha256", ""))):
+        raise ModelCIError("the test-tool archive must have a pinned SHA256")
     required_files = tool.get("required_files")
     if not isinstance(required_files, list) or not required_files:
         raise ModelCIError("the test tool required file list is empty")
@@ -173,6 +179,62 @@ def cmd_mounts(args):
     manifest = load_manifest(args.manifest)
     for _model_id, model in selected_models(manifest, args.profile):
         print("{}\t{}".format(model["host_path"], model["container_path"]))
+    return 0
+
+
+def extract_test_tool_archive(archive_path, output_path, expected_sha256):
+    archive = Path(archive_path)
+    output = Path(output_path)
+    if not archive.is_file() or archive.is_symlink():
+        raise ModelCIError("the fixed test-tool archive is missing or is a symlink")
+    actual_sha256 = sha256_file(archive)
+    if actual_sha256 != expected_sha256:
+        raise ModelCIError("test-tool archive SHA256 mismatch")
+    if output.exists():
+        raise ModelCIError("test-tool extraction destination already exists")
+    member_count = 0
+    total_size = 0
+    names = set()
+    with tarfile.open(str(archive), "r:*") as bundle:
+        members = bundle.getmembers()
+        for member in members:
+            member_count += 1
+            total_size += max(0, int(member.size))
+            name = member.name
+            parts = Path(name).parts
+            if (
+                not name
+                or name.startswith("/")
+                or "\\" in name
+                or ".." in parts
+                or name in names
+                or not (member.isfile() or member.isdir())
+            ):
+                raise ModelCIError("unsafe member in test-tool archive: {}".format(name))
+            names.add(name)
+        if member_count > 20000 or total_size > 512 * 1024 * 1024:
+            raise ModelCIError("test-tool archive exceeds the reviewed extraction limits")
+        if ".git/HEAD" not in names:
+            raise ModelCIError("test-tool archive does not contain Git metadata")
+        output.mkdir(parents=True, mode=0o700)
+        bundle.extractall(str(output))
+    return {
+        "archive": str(archive),
+        "archive_sha256": actual_sha256,
+        "member_count": member_count,
+        "total_size": total_size,
+    }
+
+
+def cmd_extract_tool(args):
+    manifest = load_manifest(args.manifest)
+    tool = manifest["tool"]
+    if args.archive != tool["archive"]:
+        raise ModelCIError("test-tool archive does not match the reviewed manifest")
+    result = extract_test_tool_archive(
+        args.archive, args.output, tool["archive_sha256"]
+    )
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 
@@ -507,6 +569,31 @@ def cmd_selftest(_args):
             pass
         else:
             raise ModelCIError("duplicate tool results were accepted")
+        archive_source = root / "archive-source"
+        archive_source.mkdir()
+        (archive_source / ".git").mkdir()
+        (archive_source / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        archive = root / "tool.tar"
+        with tarfile.open(str(archive), "w") as bundle:
+            bundle.add(str(archive_source / ".git"), arcname=".git")
+        extracted = root / "extracted"
+        report = extract_test_tool_archive(archive, extracted, sha256_file(archive))
+        if report["member_count"] < 2 or not (extracted / ".git" / "HEAD").is_file():
+            raise ModelCIError("a valid fixed test-tool archive was not extracted")
+        unsafe_archive = root / "unsafe.tar"
+        with tarfile.open(str(unsafe_archive), "w") as bundle:
+            link = tarfile.TarInfo("unsafe-link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            bundle.addfile(link)
+        try:
+            extract_test_tool_archive(
+                unsafe_archive, root / "unsafe-output", sha256_file(unsafe_archive)
+            )
+        except ModelCIError:
+            pass
+        else:
+            raise ModelCIError("an unsafe test-tool archive was accepted")
     print("LMCache-HCU model CI self-tests passed")
     return 0
 
@@ -525,6 +612,11 @@ def parser():
     mounts.add_argument("--manifest", required=True)
     mounts.add_argument("--profile", required=True)
     mounts.set_defaults(func=cmd_mounts)
+    extract = commands.add_parser("extract-tool")
+    extract.add_argument("--manifest", required=True)
+    extract.add_argument("--archive", required=True)
+    extract.add_argument("--output", required=True)
+    extract.set_defaults(func=cmd_extract_tool)
     verify = commands.add_parser("verify-tool")
     verify.add_argument("--manifest", required=True)
     verify.add_argument("--profile", required=True)
