@@ -214,6 +214,12 @@ validate_cache_root() {
     ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
     [[ ! -e "${CACHE_RUN_ROOT}" ]]
     mkdir -p "${CACHE_RUN_ROOT}/localdisk" "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
+    # Docker user-namespace remapping means container root is not the host
+    # runner user. These run-scoped, non-secret cache mounts must be writable
+    # by that remapped identity; the parent remains private and the complete
+    # run directory is removed during finalization.
+    chmod 0777 "${CACHE_RUN_ROOT}/localdisk" \
+        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
     local directory probe
     for directory in localdisk ssd posix; do
         probe="${CACHE_RUN_ROOT}/${directory}/.direct-io-probe"
