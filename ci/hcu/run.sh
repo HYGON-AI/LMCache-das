@@ -231,32 +231,21 @@ model_mount_arguments() {
         --manifest "${MODEL_MANIFEST}" --profile "${MODEL_PROFILE}")
 }
 
-fetch_test_tool() {
+prepare_test_tool() {
     model_tests_required || return 0
-    [[ -n "${HCU_CI_TEST_TOOL_USERNAME:-}" && -n "${HCU_CI_TEST_TOOL_TOKEN:-}" ]]
-    local tool_url tool_commit askpass fetch_rc
-    tool_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["url"])' "${MODEL_MANIFEST}")"
+    local tool_archive tool_commit extracted_root
+    tool_archive="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["archive"])' "${MODEL_MANIFEST}")"
     tool_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["commit"])' "${MODEL_MANIFEST}")"
-    [[ "${tool_url}" == https://developer.sourcefind.cn/* && "${tool_commit}" =~ ^[0-9a-f]{40}$ ]]
+    [[ "${tool_archive}" == /ci_public/lmcache-das/assets/test-tool/*.tar && "${tool_commit}" =~ ^[0-9a-f]{40}$ ]]
+    [[ -f "${tool_archive}" && ! -L "${tool_archive}" ]]
     [[ ! -e "${TEST_TOOL_ROOT}" ]]
-    askpass="${TRUSTED_STATE_ROOT}/sourcefind-askpass.sh"
-    printf '%s\n' \
-        '#!/usr/bin/env bash' \
-        'case "$1" in' \
-        '  *sername*) printf "%s\\n" "${HCU_CI_TEST_TOOL_USERNAME:?}" ;;' \
-        '  *) printf "%s\\n" "${HCU_CI_TEST_TOOL_TOKEN:?}" ;;' \
-        'esac' >"${askpass}"
-    chmod 0700 "${askpass}"
-    mkdir -p "${TEST_TOOL_ROOT}"
-    git -C "${TEST_TOOL_ROOT}" init --quiet
-    git -C "${TEST_TOOL_ROOT}" remote add origin "${tool_url}"
-    set +e
-    GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="${askpass}" \
-        git -C "${TEST_TOOL_ROOT}" fetch --quiet --no-tags origin main
-    fetch_rc=$?
-    set -e
-    rm -f -- "${askpass}"
-    (( fetch_rc == 0 )) || return 1
+    extracted_root="${TRUSTED_STATE_ROOT}/test-tool-archive"
+    [[ ! -e "${extracted_root}" ]]
+    python3 "${MODEL_HELPER}" extract-tool \
+        --manifest "${MODEL_MANIFEST}" --archive "${tool_archive}" \
+        --output "${extracted_root}"
+    git -C "${extracted_root}" cat-file -e "${tool_commit}^{commit}"
+    git clone --quiet --no-hardlinks "${extracted_root}" "${TEST_TOOL_ROOT}"
     git -C "${TEST_TOOL_ROOT}" cat-file -e "${tool_commit}^{commit}"
     git -C "${TEST_TOOL_ROOT}" checkout --quiet --detach "${tool_commit}"
     [[ "$(git -C "${TEST_TOOL_ROOT}" rev-parse HEAD)" == "${tool_commit}" ]]
@@ -570,9 +559,9 @@ phase_initialize() {
         return 2
     fi
     python3 "${HOST_HELPER}" state-init "${STATE_ARGS[@]}"
-    if ! fetch_test_tool >"${HOST_LOG_ROOT}/test-tool-fetch.log" 2>&1; then
+    if ! prepare_test_tool >"${HOST_LOG_ROOT}/test-tool-prepare.log" 2>&1; then
         python3 "${HOST_HELPER}" state-abort --state "${STATE_FILE}" \
-            --phase initialize --mapped-rc 3 --message 'fixed test tool fetch failed'
+            --phase initialize --mapped-rc 3 --message 'fixed test-tool archive preparation failed'
         return 3
     fi
     if ! start_gpu_lease >"${HOST_LOG_ROOT}/gpu-lease.log" 2>&1; then
