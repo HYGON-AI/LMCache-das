@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "runner": "nmz4",
+  "tool": {
+    "archive": "/ci_public/lmcache-das/assets/test-tool/lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar",
+    "archive_sha256": "66401598f4f5936cf88c27dca500356788156fbe8ca972009e868ae69b7faa9e",
+    "commit": "b01d189144ebbf37f3f1bfafe7ea4452dba6053f",
+    "required_files": [
+      "lmcache_test/prepare_output_dir.py",
+      "lmcache_test/check_init.py",
+      "lmcache_test/start_model_vllm.py",
+      "lmcache_test/long_doc_qa_tput.py",
+      "lmcache_test/opencompass_acc.py",
+      "lmcache_test/print_model_logs.py",
+      "lmcache_test/clean_kvcache.py",
+      "cases/3-vllm-func/103-vllm-demo-cmmlu_prompt_long.py"
+    ]
+  },
+  "models": {
+    "qwen3-8b": {
+      "ready": true,
+      "host_path": "/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B",
+      "container_path": "/llm/models/Qwen3-8B",
+      "gpu_count": 2
+    },
+    "deepseek-r1-w4a8-v2": {
+      "ready": true,
+      "host_path": "/public/opendas/DL_DATA/llm-models/vllm-w8a8-models/DeepSeek-R1-0528-W4A8-V2",
+      "container_path": "/llm/models/DeepSeek-R1-0528-Channel-INT4-w4a8",
+      "gpu_count": 8
+    },
+    "glm-5": {
+      "ready": false,
+      "blocked_reason": "The fixed test-tool archive does not yet contain reviewed GLM-5 vLLM and LMCache configs.",
+      "host_path": "/public/opendas/DL_DATA/llm-models/glm5/GLM-5",
+      "container_path": "/llm/models/GLM-5",
+      "gpu_count": 8
+    }
+  },
+  "scenarios": {
+    "qwen3-8b-cpu": {
+      "model": "qwen3-8b",
+      "backend": "cpu",
+      "config": "vllm_conf/Qwen3-8B/04_cpu.conf"
+    },
+    "qwen3-8b-localdisk": {
+      "model": "qwen3-8b",
+      "backend": "localdisk",
+      "config": "vllm_conf/Qwen3-8B/02_localdisk.conf"
+    },
+    "qwen3-8b-posix": {
+      "model": "qwen3-8b",
+      "backend": "posix",
+      "config": "vllm_conf/Qwen3-8B/03_posix.conf"
+    },
+    "deepseek-r1-w4a8-v2-cpu": {
+      "model": "deepseek-r1-w4a8-v2",
+      "backend": "cpu",
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/04_cpu.conf"
+    },
+    "deepseek-r1-w4a8-v2-localdisk": {
+      "model": "deepseek-r1-w4a8-v2",
+      "backend": "localdisk",
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf"
+    },
+    "deepseek-r1-w4a8-v2-posix": {
+      "model": "deepseek-r1-w4a8-v2",
+      "backend": "posix",
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf"
+    },
+    "glm-5-localdisk": {
+      "model": "glm-5",
+      "backend": "localdisk",
+      "config": "vllm_conf/glm-5/02_localdisk.conf"
+    },
+    "glm-5-posix": {
+      "model": "glm-5",
+      "backend": "posix",
+      "config": "vllm_conf/glm-5/03_posix.conf"
+    }
+  },
+  "profiles": {
+    "framework": {
+      "visible_devices": "0",
+      "runs": []
+    },
+    "pr": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-localdisk", "checks": ["long_doc"]},
+        {"scenario": "qwen3-8b-posix", "checks": ["long_doc"]}
+      ]
+    },
+    "qwen-smoke": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-localdisk", "checks": ["long_doc"]},
+        {"scenario": "qwen3-8b-posix", "checks": ["long_doc"]}
+      ]
+    },
+    "weekly-bw1100": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "runs": [
+        {"scenario": "qwen3-8b-cpu", "checks": ["long_doc", "cmmlu"]},
+        {"scenario": "qwen3-8b-localdisk", "checks": ["long_doc", "opencompass", "cmmlu"]},
+        {"scenario": "qwen3-8b-posix", "checks": ["long_doc", "opencompass", "cmmlu"]},
+        {"scenario": "deepseek-r1-w4a8-v2-cpu", "checks": ["long_doc", "cmmlu"]},
+        {"scenario": "deepseek-r1-w4a8-v2-localdisk", "checks": ["long_doc", "opencompass", "cmmlu"]},
+        {"scenario": "deepseek-r1-w4a8-v2-posix", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "full": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "inherits": "weekly-bw1100"
+    }
+  },
+  "timeouts": {
+    "start_model_seconds": 3600,
+    "long_doc_seconds": 1800,
+    "opencompass_seconds": 7200,
+    "cmmlu_seconds": 7200,
+    "cleanup_seconds": 300
+  },
+  "thresholds": {
+    "humaneval": 70.0,
+    "gsm8k": 70.0
+  },
+  "image_contract": {
+    "opencompass_dir": "/opt/opencompass",
+    "cmmlu_dataset_dir": "/public/ai_data/datasets/cmmlu"
+  }
+}

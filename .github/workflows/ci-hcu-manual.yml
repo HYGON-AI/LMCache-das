@@ -1,0 +1,160 @@
+name: LMCache HCU Manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to test
+        required: true
+        default: main
+        type: string
+      repeat:
+        description: Number of complete test-suite repetitions
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+      profile:
+        description: Reviewed test profile
+        required: true
+        default: framework
+        type: choice
+        options:
+          - framework
+          - qwen-smoke
+          - weekly-bw1100
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lmcache-hcu-manual-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hcu-tests:
+    name: hcu-tests
+    if: >-
+      ${{
+        always() &&
+        vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
+        vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true' &&
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.3.13_dev' || github.ref == 'refs/heads/ci-test')
+      }}
+    runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
+    timeout-minutes: 360
+    env:
+      HCU_CI_PROFILE: manual
+      HCU_CI_MODEL_PROFILE: ${{ inputs.profile }}
+      HCU_CI_RUNNER_KIND: nmz4
+      HCU_CI_REPEAT: ${{ inputs.repeat }}
+      HCU_CI_BASE_IMAGE: ${{ vars.LMCACHE_HCU_BASE_IMAGE }}
+      HCU_CI_BASE_IMAGE_ID: ${{ vars.LMCACHE_HCU_BASE_IMAGE_ID }}
+      HCU_CI_ISOLATED_RUNNER: ${{ vars.LMCACHE_HCU_RUNNER_ISOLATED }}
+      HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
+      HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
+      HCU_CI_VISIBLE_DEVICES: ${{ inputs.profile == 'framework' && '0' || inputs.profile == 'qwen-smoke' && '0,1' || '0,1,2,3,4,5,6,7' }}
+      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock
+      HCU_CI_CACHE_ROOT: ${{ vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 }}
+      HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
+      HCU_CI_RUN_ID: ${{ github.run_id }}
+      HCU_CI_ATTEMPT: ${{ github.run_attempt }}
+      HCU_CI_CONTAINER_MEMORY: ${{ (inputs.profile == 'weekly-bw1100' || inputs.profile == 'full') && '128g' || '56g' }}
+      HCU_CI_CONTAINER_CPUS: "64"
+      HCU_CI_PHASE_TIMEOUT_SECONDS: ${{ (inputs.profile == 'weekly-bw1100' || inputs.profile == 'full') && '20400' || inputs.profile == 'qwen-smoke' && '6600' || '3000' }}
+    steps:
+      - name: Checkout trusted CI controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+
+      - name: Checkout selected source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.ref }}
+          path: source
+          persist-credentials: false
+
+      - name: Preflight and initialize
+        if: ${{ !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
+
+      - name: Build and verify current wheel
+        if: ${{ always() && !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
+            echo "Skipped because the preflight status file is missing."
+            exit 0
+          fi
+          IFS= read -r phase_status < "${HCU_CI_JOB_STATUS_FILE}"
+          if [[ "${phase_status}" != "passed" ]]; then
+            echo "Skipped because preflight did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" build
+
+      - name: Verify patches and collect tests
+        if: ${{ always() && !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
+            echo "Skipped because the wheel-build status file is missing."
+            exit 0
+          fi
+          IFS= read -r phase_status < "${HCU_CI_JOB_STATUS_FILE}"
+          if [[ "${phase_status}" != "passed" ]]; then
+            echo "Skipped because wheel build did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" prepare-tests
+
+      - name: Run HCU test suite
+        if: ${{ always() && !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
+            echo "Skipped because the test-preparation status file is missing."
+            exit 0
+          fi
+          IFS= read -r phase_status < "${HCU_CI_JOB_STATUS_FILE}"
+          if [[ "${phase_status}" != "passed" ]]; then
+            echo "Skipped because test preparation did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" test
+
+      - name: Cleanup, validate and publish
+        if: always()
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          set +e
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" finalize
+          maintenance_rc=$?
+          set -e
+          if (( maintenance_rc != 0 )); then
+            echo "Cleanup, validation, or publication failed with exit code ${maintenance_rc}." >&2
+            exit "${maintenance_rc}"
+          fi

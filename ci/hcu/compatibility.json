@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "lmcache": {
+    "version": "0.3.13",
+    "source_commit": "fc031d471a566edb6d49a86c9116cc23cfb04111",
+    "source_tag": "v0.3.13"
+  },
+  "vllm": {
+    "version": "0.15.1"
+  },
+  "torch": {
+    "version": "2.9.0"
+  },
+  "python": {
+    "minimum": "3.10",
+    "maximum_exclusive": "3.14"
+  },
+  "dtk": {
+    "home": "/opt/dtk"
+  },
+  "test_scope": "tests"
+}
