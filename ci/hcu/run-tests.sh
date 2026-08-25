@@ -87,13 +87,18 @@ run_phase() {
     local phase_rc="$2"
     shift 2
     local log="${LOG_ROOT}/${stage}.log"
+    local -a pipeline_status
     CURRENT_STAGE="${stage}"
     printf '%s\n' "${stage}" >"${STATE_ROOT}/current-stage"
     set +e
-    "$@" >"${log}" 2>&1
-    local command_rc=$?
+    "$@" 2>&1 | tee "${log}"
+    pipeline_status=("${PIPESTATUS[@]}")
     set -e
-    cat "${log}"
+    local command_rc="${pipeline_status[0]}"
+    local tee_rc="${pipeline_status[1]}"
+    if (( command_rc == 0 && tee_rc != 0 )); then
+        command_rc="${tee_rc}"
+    fi
     printf '%s\n' "${command_rc}" >"${STATE_ROOT}/${stage}.rc"
     if (( command_rc != 0 )); then
         write_synthetic_junit "${stage}" \
