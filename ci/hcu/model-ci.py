@@ -3,7 +3,9 @@
 
 import argparse
 import configparser
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import xml.etree.ElementTree as ET
 
@@ -334,23 +337,46 @@ def validate_result_records(path, expected_steps):
 
 def run_command(command, cwd, timeout, log_handle):
     started = time.time()
-    log_handle.write("$ {}\n".format(" ".join(command)))
+    command_line = "$ {}\n".format(" ".join(command))
+    log_handle.write(command_line)
     log_handle.flush()
+    sys.stdout.write(command_line)
+    sys.stdout.flush()
+
+    def copy_output(stream):
+        for line in iter(stream.readline, ""):
+            log_handle.write(line)
+            log_handle.flush()
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        bufsize=1,
+    )
+    reader = threading.Thread(target=copy_output, args=(process.stdout,))
+    reader.daemon = True
+    reader.start()
     try:
-        process = subprocess.run(
-            command,
-            cwd=str(cwd),
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=False,
-            universal_newlines=True,
-        )
-        return process.returncode, time.time() - started
+        return_code = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        log_handle.write("command timed out after {} seconds\n".format(timeout))
+        process.kill()
+        process.wait()
+        message = "command timed out after {} seconds\n".format(timeout)
+        log_handle.write(message)
         log_handle.flush()
-        return 124, time.time() - started
+        sys.stdout.write(message)
+        sys.stdout.flush()
+        return_code = 124
+    finally:
+        reader.join(timeout=10)
+        if process.stdout is not None:
+            process.stdout.close()
+    return return_code, time.time() - started
 
 
 def scenario_commands(manifest, tool_root, scenario_id, checks, results_dir, logs_dir, work_dir):
@@ -418,15 +444,44 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
     failure = None
     duration = 0.0
     cmmlu_rc = None
+    model_log_printed = False
     with log_path.open("w", encoding="utf-8", errors="replace") as log_handle:
         for step, command, timeout in commands:
-            rc, elapsed = run_command(command, tool_root, timeout, log_handle)
+            stream = "server" if step == "print-model-log" else "client"
+            print(
+                "::group::Model {} / {} {} log".format(case_id, step, stream),
+                flush=True,
+            )
+            try:
+                rc, elapsed = run_command(command, tool_root, timeout, log_handle)
+            finally:
+                print("::endgroup::", flush=True)
             duration += elapsed
+            if step == "print-model-log":
+                model_log_printed = True
             if step == "cmmlu":
                 cmmlu_rc = rc
             if rc != 0 and step not in {"print-model-log"}:
                 failure = "{} exited with {}".format(step, rc)
                 break
+
+        # Server output is essential failure evidence. Always print it to the
+        # Actions stream, even if a client command failed before the normal
+        # print-model-log command was reached.
+        if not model_log_printed:
+            _, command, timeout = next(
+                item for item in commands if item[0] == "print-model-log"
+            )
+            print(
+                "::group::Model {} / print-model-log server log".format(case_id),
+                flush=True,
+            )
+            try:
+                _, elapsed = run_command(command, tool_root, timeout, log_handle)
+            finally:
+                print("::endgroup::", flush=True)
+            duration += elapsed
+
         cleanup_command = [
             sys.executable,
             "-m",
@@ -544,6 +599,21 @@ def cmd_result_gate(args):
 def cmd_selftest(_args):
     with tempfile.TemporaryDirectory(prefix="lmcache-model-ci-") as temporary:
         root = Path(temporary)
+        command_log = io.StringIO()
+        action_log = io.StringIO()
+        with contextlib.redirect_stdout(action_log):
+            command_rc, _ = run_command(
+                [sys.executable, "-c", "print('model-stream-marker')"],
+                root,
+                30,
+                command_log,
+            )
+        if command_rc != 0:
+            raise ModelCIError("model command streaming self-test failed")
+        if "model-stream-marker" not in command_log.getvalue():
+            raise ModelCIError("model command output was not archived")
+        if "model-stream-marker" not in action_log.getvalue():
+            raise ModelCIError("model command output was not streamed")
         failed = root / "failed.json"
         write_json(failed, [{"step_name": "long_doc", "result": "failed"}])
         try:
