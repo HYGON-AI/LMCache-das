@@ -1,0 +1,157 @@
+name: LMCache HCU PR
+
+on:
+  # Keep the workflow definition and host-side controller on a protected base
+  # branch. The untrusted PR merge result is only copied into an isolated,
+  # network-disabled test container by ci/hcu/run.sh.
+  pull_request_target:
+    branches:
+      - main
+      - v0.3.13_dev
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lmcache-hcu-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  hcu-tests:
+    name: hcu-tests
+    if: >-
+      ${{
+        always() &&
+        vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
+        vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
+      }}
+    runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
+    timeout-minutes: 60
+    env:
+      HCU_CI_PROFILE: pr
+      HCU_CI_MODEL_PROFILE: pr
+      HCU_CI_RUNNER_KIND: nmz4
+      HCU_CI_REPEAT: "1"
+      HCU_CI_BASE_IMAGE: ${{ vars.LMCACHE_HCU_BASE_IMAGE }}
+      HCU_CI_BASE_IMAGE_ID: ${{ vars.LMCACHE_HCU_BASE_IMAGE_ID }}
+      HCU_CI_ISOLATED_RUNNER: ${{ vars.LMCACHE_HCU_RUNNER_ISOLATED }}
+      HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
+      HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
+      HCU_CI_VISIBLE_DEVICES: 0,1
+      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock
+      HCU_CI_CACHE_ROOT: ${{ vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 }}
+      HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
+      HCU_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
+      HCU_CI_EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HCU_CI_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HCU_CI_RUN_ID: ${{ github.run_id }}
+      HCU_CI_ATTEMPT: ${{ github.run_attempt }}
+      HCU_CI_CONTAINER_MEMORY: 56g
+      HCU_CI_CONTAINER_CPUS: "32"
+      HCU_CI_PHASE_TIMEOUT_SECONDS: "3000"
+    steps:
+      - name: Checkout trusted CI controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: controller
+          persist-credentials: false
+
+      - name: Checkout PR merge result
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          path: source
+          persist-credentials: false
+          fetch-depth: 2
+          # This job is deliberately allowed only on an isolated, reset-after-
+          # use runner. The trusted controller validates both merge parents,
+          # then executes this checkout only inside the restricted container.
+          allow-unsafe-pr-checkout: true
+
+      - name: Preflight and initialize
+        if: ${{ !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
+
+      - name: Build and verify current wheel
+        if: ${{ always() && !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
+            echo "Skipped because the preflight status file is missing."
+            exit 0
+          fi
+          IFS= read -r phase_status < "${HCU_CI_JOB_STATUS_FILE}"
+          if [[ "${phase_status}" != "passed" ]]; then
+            echo "Skipped because preflight did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" build
+
+      - name: Verify patches and collect tests
+        if: ${{ always() && !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
+            echo "Skipped because the wheel-build status file is missing."
+            exit 0
+          fi
+          IFS= read -r phase_status < "${HCU_CI_JOB_STATUS_FILE}"
+          if [[ "${phase_status}" != "passed" ]]; then
+            echo "Skipped because wheel build did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" prepare-tests
+
+      - name: Run HCU test suite
+        if: ${{ always() && !cancelled() }}
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
+            echo "Skipped because the test-preparation status file is missing."
+            exit 0
+          fi
+          IFS= read -r phase_status < "${HCU_CI_JOB_STATUS_FILE}"
+          if [[ "${phase_status}" != "passed" ]]; then
+            echo "Skipped because test preparation did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" test
+
+      - name: Cleanup, validate and publish
+        if: always()
+        env:
+          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
+          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
+          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
+          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+        run: |
+          set +e
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" finalize
+          maintenance_rc=$?
+          set -e
+          if (( maintenance_rc != 0 )); then
+            echo "Cleanup, validation, or publication failed with exit code ${maintenance_rc}." >&2
+            exit "${maintenance_rc}"
+          fi
