@@ -389,7 +389,7 @@ start_test_container() {
     fi
     docker run -d --init --name "${CONTAINER_NAME}" \
         --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
-        --network "${network_name}" --read-only --shm-size 16g \
+        --network "${network_name}" --read-only --shm-size 32g \
         --tmpfs "/sandbox:rw,exec,nosuid,nodev,size=32g,mode=0750" \
         --tmpfs "/tmp:rw,exec,nosuid,nodev,size=4g,mode=1770" \
         --tmpfs "/output:rw,nosuid,nodev,size=${OUTPUT_LIMIT},mode=0750" \
