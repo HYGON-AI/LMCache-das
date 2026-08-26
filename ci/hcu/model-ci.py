@@ -120,6 +120,8 @@ def validate_manifest(manifest):
         raise ModelCIError("the reviewed OpenCompass root changed")
     if image_contract.get("dataset_host_path") != "/public/opendas/DL_DATA/opencompass_data":
         raise ModelCIError("the reviewed evaluation dataset host path changed")
+    if image_contract.get("cmmlu_host_path") != "/public/opendas/DL_DATA/opencompass_data/cmmlu":
+        raise ModelCIError("the reviewed CMMLU dataset host path changed")
     if image_contract.get("dataset_dir") != "/public/ai_data/datasets":
         raise ModelCIError("the reviewed evaluation dataset container path changed")
     if image_contract.get("opencompass_dataset_dir") != "/public/ai_data/datasets/data":
@@ -268,13 +270,13 @@ def cmd_mounts(args):
         print(
             "{}\t{}".format(
                 contract["dataset_host_path"],
-                contract["dataset_dir"],
+                contract["opencompass_dataset_dir"],
             )
         )
         print(
             "{}\t{}".format(
-                contract["dataset_host_path"],
-                contract["opencompass_dataset_dir"],
+                contract["cmmlu_host_path"],
+                contract["dataset_dir"] + "/cmmlu",
             )
         )
     return 0

@@ -101,13 +101,13 @@ The source asset remains read-only. Weekly copies the reviewed OpenCompass tree
 to `/sandbox/opencompass-ci` before execution because OpenCompass writes task
 parameter files below its own `tmp/` directory.
 The nmz4 evaluation datasets at
-`/public/opendas/DL_DATA/opencompass_data` are mounted read-only at
-`/public/ai_data/datasets` and its OpenCompass compatibility path
-`/public/ai_data/datasets/data`. The two read-only binds expose the same
-reviewed HumanEval, GSM8K and CMMLU assets without copying data or allowing
-evaluation jobs to access the network; the second path matches OpenCompass's
-fixed `COMPASS_DATA_CACHE/data/...` lookup while the supplied CMMLU script keeps
-its fixed `/public/ai_data/datasets/cmmlu` path.
+`/public/opendas/DL_DATA/opencompass_data` are mounted read-only at the
+OpenCompass compatibility path `/public/ai_data/datasets/data`; its CMMLU
+subdirectory is independently mounted read-only at
+`/public/ai_data/datasets/cmmlu`. These sibling binds avoid unsupported nested
+read-only Docker mounts, do not copy data, and do not allow network access.
+They match OpenCompass's fixed `COMPASS_DATA_CACHE/data/...` lookup while the
+supplied CMMLU script keeps its fixed `/public/ai_data/datasets/cmmlu` path.
 
 The supplied long-document wrapper assumes every cache backend has a filesystem
 offload path. Pure CPU-memory scenarios do not, so the wrapper reports failure

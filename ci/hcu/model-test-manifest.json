@@ -149,6 +149,7 @@
   "image_contract": {
     "opencompass_dir": "/lmcache_workspace/opencompass",
     "dataset_host_path": "/public/opendas/DL_DATA/opencompass_data",
+    "cmmlu_host_path": "/public/opendas/DL_DATA/opencompass_data/cmmlu",
     "dataset_dir": "/public/ai_data/datasets",
     "opencompass_dataset_dir": "/public/ai_data/datasets/data"
   }
