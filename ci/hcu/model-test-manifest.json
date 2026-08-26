@@ -133,7 +133,8 @@
     "long_doc_require_all_requests": true
   },
   "image_contract": {
-    "opencompass_dir": "/opt/opencompass",
+    "opencompass_dir": "/lmcache_workspace/opencompass",
+    "cmmlu_dataset_host_path": "/public/opendas/DL_DATA/opencompass_data/cmmlu",
     "cmmlu_dataset_dir": "/public/ai_data/datasets/cmmlu"
   }
 }

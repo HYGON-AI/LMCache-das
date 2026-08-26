@@ -104,6 +104,15 @@ def validate_manifest(manifest):
     profiles = manifest.get("profiles")
     if not all(isinstance(item, dict) for item in (models, scenarios, profiles)):
         raise ModelCIError("models, scenarios and profiles must be objects")
+    image_contract = manifest.get("image_contract")
+    if not isinstance(image_contract, dict):
+        raise ModelCIError("image_contract must be an object")
+    if image_contract.get("opencompass_dir") != "/lmcache_workspace/opencompass":
+        raise ModelCIError("the reviewed OpenCompass root changed")
+    if image_contract.get("cmmlu_dataset_host_path") != "/public/opendas/DL_DATA/opencompass_data/cmmlu":
+        raise ModelCIError("the reviewed CMMLU host path changed")
+    if image_contract.get("cmmlu_dataset_dir") != "/public/ai_data/datasets/cmmlu":
+        raise ModelCIError("the reviewed CMMLU container path changed")
     for model_id, model in models.items():
         if not TOKEN.match(model_id) or not isinstance(model, dict):
             raise ModelCIError("invalid model declaration: {}".format(model_id))
@@ -199,6 +208,19 @@ def cmd_mounts(args):
     manifest = load_manifest(args.manifest)
     for _model_id, model in selected_models(manifest, args.profile):
         print("{}\t{}".format(model["host_path"], model["container_path"]))
+    checks = {
+        check
+        for run in selected_runs(manifest, args.profile)
+        for check in run["checks"]
+    }
+    if "cmmlu" in checks:
+        contract = manifest["image_contract"]
+        print(
+            "{}\t{}".format(
+                contract["cmmlu_dataset_host_path"],
+                contract["cmmlu_dataset_dir"],
+            )
+        )
     return 0
 
 
@@ -638,6 +660,30 @@ def cmd_run(args):
         if tool_root is None:
             raise ModelCIError("the selected profile requires a test tool checkout")
         verification = verify_tool(manifest, tool_root, args.profile)
+        required_checks = {
+            check for run in runs for check in run["checks"]
+        }
+        if "opencompass" in required_checks:
+            opencompass_root = Path(manifest["image_contract"]["opencompass_dir"])
+            candidates = (opencompass_root, opencompass_root / "opencompass")
+            if not any(
+                (candidate / "run.py").is_file()
+                and (candidate / "opencompass").is_dir()
+                for candidate in candidates
+            ):
+                raise ModelCIError(
+                    "the reviewed OpenCompass tree is missing below {}".format(
+                        opencompass_root
+                    )
+                )
+        if "cmmlu" in required_checks:
+            cmmlu_root = Path(manifest["image_contract"]["cmmlu_dataset_dir"])
+            if not cmmlu_root.is_dir() or not next(cmmlu_root.rglob("*.csv"), None):
+                raise ModelCIError(
+                    "the reviewed CMMLU dataset is missing below {}".format(
+                        cmmlu_root
+                    )
+                )
         for model_id, model in selected_models(manifest, args.profile):
             model_path = Path(model["container_path"])
             if not model_path.is_dir():
