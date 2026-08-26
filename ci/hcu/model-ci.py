@@ -33,6 +33,9 @@ ALLOWED_MODEL_ENVIRONMENT = {"VLLM_USE_CAT_MLA": {"1"}}
 ALLOWED_CONFIG_FIXES = {
     "qwen3-8b-cpu": {"vllm.disable-cascade-attn"},
 }
+ALLOWED_CONFIG_OVERRIDES = {
+    "qwen3-8b-cpu": {"vllm.gpu-memory-utilization": "0.20"},
+}
 ALLOWED_LONG_DOC_OPTIONS = {
     "document_length": (1024, 65536),
     "num_documents": (1, 100),
@@ -191,7 +194,10 @@ def validate_manifest(manifest):
         if config.startswith("/") or ".." in Path(config).parts or not config.endswith(".conf"):
             raise ModelCIError("scenario {} has an unsafe config path".format(scenario_id))
         config_fixes = scenario.get("config_fixes", {})
-        if not isinstance(config_fixes, dict) or set(config_fixes) - {"drop_duplicate_options"}:
+        if not isinstance(config_fixes, dict) or set(config_fixes) - {
+            "drop_duplicate_options",
+            "set_options",
+        }:
             raise ModelCIError("scenario {} has unsupported config fixes".format(scenario_id))
         duplicate_options = config_fixes.get("drop_duplicate_options", [])
         if not isinstance(duplicate_options, list) or any(
@@ -201,6 +207,16 @@ def validate_manifest(manifest):
             raise ModelCIError("scenario {} has invalid duplicate option fixes".format(scenario_id))
         if set(duplicate_options) != ALLOWED_CONFIG_FIXES.get(scenario_id, set()):
             raise ModelCIError("scenario {} config fixes differ from the reviewed allowlist".format(scenario_id))
+        option_overrides = config_fixes.get("set_options", {})
+        if (
+            not isinstance(option_overrides, dict)
+            or option_overrides != ALLOWED_CONFIG_OVERRIDES.get(scenario_id, {})
+        ):
+            raise ModelCIError(
+                "scenario {} config overrides differ from the reviewed allowlist".format(
+                    scenario_id
+                )
+            )
         long_doc_validation = scenario.get("long_doc_validation", "tool")
         if long_doc_validation not in ALLOWED_LONG_DOC_VALIDATIONS:
             raise ModelCIError("scenario {} has an invalid long-document validation".format(scenario_id))
@@ -418,6 +434,58 @@ def deduplicate_config_options(text, reviewed_options):
     return "".join(result)
 
 
+def override_config_options(text, reviewed_options):
+    targets = {}
+    for name, value in reviewed_options.items():
+        section, option = name.rsplit(".", 1)
+        targets[(section.lower(), option.lower())] = str(value)
+    current_section = ""
+    replaced = set()
+    result = []
+    section_pattern = re.compile(r"^\s*\[([^]]+)\]\s*$")
+    option_pattern = re.compile(
+        r"^(\s*)([^#;][^:=]*?)(\s*)([:=])(\s*)(.*?)(\r?\n)?$"
+    )
+    for line in text.splitlines(keepends=True):
+        section_match = section_pattern.match(line)
+        if section_match:
+            current_section = section_match.group(1).strip().lower()
+            result.append(line)
+            continue
+        option_match = option_pattern.match(line)
+        if option_match:
+            key = (current_section, option_match.group(2).strip().lower())
+            if key in targets:
+                if key in replaced:
+                    raise ModelCIError(
+                        "reviewed config override matched a duplicate option: {}.{}".format(
+                            *key
+                        )
+                    )
+                newline = option_match.group(7) or ""
+                line = "{}{}{}{}{}{}{}".format(
+                    option_match.group(1),
+                    option_match.group(2),
+                    option_match.group(3),
+                    option_match.group(4),
+                    option_match.group(5),
+                    targets[key],
+                    newline,
+                )
+                replaced.add(key)
+        result.append(line)
+    if replaced != set(targets):
+        missing = sorted(
+            "{}.{}".format(*item) for item in set(targets) - replaced
+        )
+        raise ModelCIError(
+            "reviewed config override targets were not found: {}".format(
+                ", ".join(missing)
+            )
+        )
+    return "".join(result)
+
+
 def prepare_effective_config(tool_root, scenario, case_id):
     reviewed_root = Path(tool_root).resolve()
     source = (reviewed_root / scenario["config"]).resolve()
@@ -431,6 +499,9 @@ def prepare_effective_config(tool_root, scenario, case_id):
     )
     if duplicate_options:
         text = deduplicate_config_options(text, duplicate_options)
+    option_overrides = scenario.get("config_fixes", {}).get("set_options", {})
+    if option_overrides:
+        text = override_config_options(text, option_overrides)
     destination_root = reviewed_root / "vllm_conf" / ".ci-effective"
     destination_root.mkdir(parents=True, exist_ok=True)
     destination = destination_root / "{}.conf".format(case_id)
@@ -1163,6 +1234,12 @@ disable-cascade-attn = true
         )
         if fixed_config.count("disable-cascade-attn") != 1:
             raise ModelCIError("the reviewed duplicate config option was not removed")
+        overridden_config = override_config_options(
+            "[vllm]\ngpu-memory-utilization = 0.85\n",
+            {"vllm.gpu-memory-utilization": "0.20"},
+        )
+        if "gpu-memory-utilization = 0.20" not in overridden_config:
+            raise ModelCIError("the reviewed config option override was not applied")
         opencompass_source = root / "opencompass-source"
         (opencompass_source / "opencompass").mkdir(parents=True)
         (opencompass_source / "run.py").write_text("# test\n", encoding="utf-8")

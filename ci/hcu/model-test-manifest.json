@@ -52,11 +52,14 @@
       "config": "vllm_conf/Qwen3-8B/04_cpu.conf",
       "long_doc_validation": "cpu_memory",
       "long_doc_options": {
-        "num_documents": 4,
+        "num_documents": 12,
         "max_inflight_requests": 4
       },
       "config_fixes": {
-        "drop_duplicate_options": ["vllm.disable-cascade-attn"]
+        "drop_duplicate_options": ["vllm.disable-cascade-attn"],
+        "set_options": {
+          "vllm.gpu-memory-utilization": "0.20"
+        }
       }
     },
     "qwen3-8b-localdisk": {
