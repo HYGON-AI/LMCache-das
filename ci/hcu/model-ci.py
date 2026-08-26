@@ -38,6 +38,9 @@ ALLOWED_LONG_DOC_OPTIONS = {
     "num_documents": (1, 100),
     "max_inflight_requests": (1, 64),
 }
+ALLOWED_OPENCOMPASS_OPTIONS = {
+    "batch_size": (1, 32),
+}
 ALLOWED_LONG_DOC_VALIDATIONS = {"tool", "cpu_memory"}
 
 
@@ -163,6 +166,15 @@ def validate_manifest(manifest):
                         model_id, name, value
                     )
                 )
+        start_model_attempts = model.get("start_model_attempts", 1)
+        if (
+            isinstance(start_model_attempts, bool)
+            or not isinstance(start_model_attempts, int)
+            or not 1 <= start_model_attempts <= 2
+        ):
+            raise ModelCIError(
+                "model {} has an invalid start_model_attempts value".format(model_id)
+            )
         required_options = model.get("required_vllm_options", {})
         if not isinstance(required_options, dict):
             raise ModelCIError("model {} required_vllm_options must be an object".format(model_id))
@@ -201,6 +213,26 @@ def validate_manifest(manifest):
             if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
                 raise ModelCIError(
                     "scenario {} has an invalid {} value".format(scenario_id, name)
+                )
+        opencompass_options = scenario.get("opencompass_options", {})
+        if (
+            not isinstance(opencompass_options, dict)
+            or set(opencompass_options) - set(ALLOWED_OPENCOMPASS_OPTIONS)
+        ):
+            raise ModelCIError(
+                "scenario {} has invalid OpenCompass options".format(scenario_id)
+            )
+        for name, value in opencompass_options.items():
+            lower, upper = ALLOWED_OPENCOMPASS_OPTIONS[name]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not lower <= value <= upper
+            ):
+                raise ModelCIError(
+                    "scenario {} has an invalid OpenCompass {} value".format(
+                        scenario_id, name
+                    )
                 )
     for profile in profiles:
         value = profile_config(manifest, profile)
@@ -643,6 +675,42 @@ def run_command(command, cwd, timeout, log_handle, environment=None):
     return return_code, time.time() - started
 
 
+def retryable_start_failure(result_path, tool_root):
+    """Only retry the reviewed CAT-MLA first-request timeout signature."""
+    try:
+        with Path(result_path).open(encoding="utf-8") as handle:
+            records = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(records, list):
+        return False
+    matches = [
+        item
+        for item in records
+        if isinstance(item, dict) and item.get("step_name") == "start_model_vllm"
+    ]
+    if len(matches) != 1 or matches[0].get("result") != "failed":
+        return False
+    model_log = matches[0].get("model_log_file_path")
+    if not isinstance(model_log, str) or not model_log:
+        return False
+    try:
+        model_log_path = Path(model_log).resolve()
+        allowed_root = (Path(tool_root) / "lmcache_test" / "logs").resolve()
+        model_log_path.relative_to(allowed_root)
+        text = model_log_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return False
+    required = (
+        "RPC call to sample_tokens timed out",
+        "EngineDeadError: EngineCore encountered an issue",
+    )
+    rejected = ("OutOfMemoryError", "HIP out of memory", "MemoryError")
+    return all(marker in text for marker in required) and not any(
+        marker in text for marker in rejected
+    )
+
+
 def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir, work_dir, opencompass_dir, scenario):
     config = str(config)
     python = sys.executable
@@ -682,7 +750,12 @@ def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir
     if "opencompass" in checks:
         if opencompass_dir is None:
             raise ModelCIError("the scenario requires a writable OpenCompass tree")
-        commands.append(("opencompass", [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", str(opencompass_dir), "--work_dir", str(work_dir / "opencompass"), "--timeout", str(manifest["timeouts"]["opencompass_seconds"]), "--acc-threshold", str(manifest["thresholds"]["humaneval"])], int(manifest["timeouts"]["opencompass_seconds"]) + 60))
+        command = [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", str(opencompass_dir), "--work_dir", str(work_dir / "opencompass"), "--timeout", str(manifest["timeouts"]["opencompass_seconds"]), "--acc-threshold", str(manifest["thresholds"]["humaneval"])]
+        if "batch_size" in scenario.get("opencompass_options", {}):
+            command.extend(
+                ["--batch-size", str(scenario["opencompass_options"]["batch_size"])]
+            )
+        commands.append(("opencompass", command, int(manifest["timeouts"]["opencompass_seconds"]) + 60))
         expected.append("opencompass")
     if "cmmlu" in checks:
         commands.append(("cmmlu", [python, str(tool_root / "cases/3-vllm-func/103-vllm-demo-cmmlu_prompt_long.py"), "--vllm_conf", config, "--work_dir", str(work_dir / "cmmlu"), "--strict_log_check"], int(manifest["timeouts"]["cmmlu_seconds"])))
@@ -749,6 +822,7 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
     duration = 0.0
     cmmlu_rc = None
     model_log_printed = False
+    start_model_attempts_used = 0
     with log_path.open("w", encoding="utf-8", errors="replace") as log_handle:
         if scenario_environment:
             environment_line = "# reviewed environment: {}\n".format(
@@ -763,17 +837,109 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
             sys.stdout.flush()
         for step, command, timeout in commands:
             stream = "server" if step == "print-model-log" else "client"
-            print(
-                "::group::Model {} / {} {} log".format(case_id, step, stream),
-                flush=True,
+            max_attempts = (
+                int(model.get("start_model_attempts", 1))
+                if step == "start-model"
+                else 1
             )
-            try:
-                rc, elapsed = run_command(
-                    command, tool_root, timeout, log_handle, command_environment
+            attempt = 0
+            while True:
+                attempt += 1
+                if step == "start-model":
+                    start_model_attempts_used = attempt
+                attempt_suffix = (
+                    " attempt {}/{}".format(attempt, max_attempts)
+                    if max_attempts > 1
+                    else ""
                 )
-            finally:
-                print("::endgroup::", flush=True)
-            duration += elapsed
+                print(
+                    "::group::Model {} / {}{} {} log".format(
+                        case_id, step, attempt_suffix, stream
+                    ),
+                    flush=True,
+                )
+                try:
+                    rc, elapsed = run_command(
+                        command, tool_root, timeout, log_handle, command_environment
+                    )
+                finally:
+                    print("::endgroup::", flush=True)
+                duration += elapsed
+                if (
+                    step != "start-model"
+                    or rc == 0
+                    or attempt >= max_attempts
+                    or not retryable_start_failure(result_path, tool_root)
+                ):
+                    break
+
+                print(
+                    "DeepSeek CAT-MLA cold start hit the reviewed sample_tokens "
+                    "timeout; cleaning up and retrying once.",
+                    flush=True,
+                )
+                print_command = next(
+                    item[1] for item in commands if item[0] == "print-model-log"
+                )
+                _, elapsed = run_command(
+                    print_command, tool_root, 600, log_handle, command_environment
+                )
+                duration += elapsed
+                retry_cleanup_command = [
+                    sys.executable,
+                    "-m",
+                    "lmcache_test.clean_kvcache",
+                    "--results_dir",
+                    str(results_dir),
+                    "--vllm_conf",
+                    config,
+                    "--step_name",
+                    "clean_kvcache",
+                ]
+                retry_cleanup_rc, elapsed = run_command(
+                    retry_cleanup_command,
+                    tool_root,
+                    int(manifest["timeouts"]["cleanup_seconds"]),
+                    log_handle,
+                    command_environment,
+                )
+                duration += elapsed
+                retry_evidence = (
+                    Path(output_root)
+                    / "model-results"
+                    / "{}.startup-attempt-{}.json".format(case_id, attempt)
+                )
+                if result_path.is_file():
+                    shutil.copyfile(str(result_path), str(retry_evidence))
+                if retry_cleanup_rc != 0:
+                    rc = retry_cleanup_rc
+                    break
+
+                retry_setup_failed = False
+                for retry_step, retry_command, retry_timeout in commands[:2]:
+                    print(
+                        "::group::Model {} / retry-{} client log".format(
+                            case_id, retry_step
+                        ),
+                        flush=True,
+                    )
+                    try:
+                        retry_rc, elapsed = run_command(
+                            retry_command,
+                            tool_root,
+                            retry_timeout,
+                            log_handle,
+                            command_environment,
+                        )
+                    finally:
+                        print("::endgroup::", flush=True)
+                    duration += elapsed
+                    if retry_rc != 0:
+                        rc = retry_rc
+                        retry_setup_failed = True
+                        break
+                if retry_setup_failed:
+                    break
             if step == "print-model-log":
                 model_log_printed = True
             if step == "cmmlu":
@@ -859,6 +1025,8 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         "long_doc_validation": scenario.get("long_doc_validation", "tool"),
         "long_doc_options": dict(scenario.get("long_doc_options", {})),
         "environment": scenario_environment,
+        "start_model_attempts_used": start_model_attempts_used,
+        "opencompass_options": dict(scenario.get("opencompass_options", {})),
     }
 
 
@@ -1042,6 +1210,35 @@ disable-cascade-attn = true
         )
         if startup_command[-2:] != ["--api_timeout", "300"]:
             raise ModelCIError("the reviewed model startup request timeout was not applied")
+        retry_tool = root / "retry-tool"
+        retry_log = retry_tool / "lmcache_test" / "logs" / "model.log"
+        retry_log.parent.mkdir(parents=True)
+        retry_log.write_text(
+            "RPC call to sample_tokens timed out\n"
+            "EngineDeadError: EngineCore encountered an issue\n",
+            encoding="utf-8",
+        )
+        retry_result = root / "retry-result.json"
+        write_json(
+            retry_result,
+            [
+                {
+                    "step_name": "start_model_vllm",
+                    "result": "failed",
+                    "model_log_file_path": str(retry_log),
+                }
+            ],
+        )
+        if not retryable_start_failure(retry_result, retry_tool):
+            raise ModelCIError("the reviewed CAT-MLA cold-start failure was not retried")
+        retry_log.write_text(
+            "RPC call to sample_tokens timed out\n"
+            "EngineDeadError: EngineCore encountered an issue\n"
+            "HIP out of memory\n",
+            encoding="utf-8",
+        )
+        if retryable_start_failure(retry_result, retry_tool):
+            raise ModelCIError("an out-of-memory startup failure was marked retryable")
         failed = root / "failed.json"
         write_json(failed, [{"step_name": "long_doc", "result": "failed"}])
         try:

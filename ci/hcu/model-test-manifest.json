@@ -31,6 +31,7 @@
       "environment": {
         "VLLM_USE_CAT_MLA": "1"
       },
+      "start_model_attempts": 2,
       "required_vllm_options": {
         "kv-cache-dtype": "fp8_e4m3"
       }
@@ -80,12 +81,26 @@
     "deepseek-r1-w4a8-v2-localdisk": {
       "model": "deepseek-r1-w4a8-v2",
       "backend": "localdisk",
-      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf"
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf",
+      "long_doc_options": {
+        "num_documents": 50,
+        "max_inflight_requests": 4
+      },
+      "opencompass_options": {
+        "batch_size": 4
+      }
     },
     "deepseek-r1-w4a8-v2-posix": {
       "model": "deepseek-r1-w4a8-v2",
       "backend": "posix",
-      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf"
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf",
+      "long_doc_options": {
+        "num_documents": 50,
+        "max_inflight_requests": 4
+      },
+      "opencompass_options": {
+        "batch_size": 4
+      }
     },
     "glm-5-localdisk": {
       "model": "glm-5",

@@ -163,10 +163,15 @@ JUnit testcase.
 
 All DeepSeek scenarios export `VLLM_USE_CAT_MLA=1`. Their reviewed config must
 still contain `kv-cache-dtype = fp8_e4m3`; the manifest gate rejects a config
-that drops or changes it. Long-document runs pass only when both warmup and
-query report every requested prompt as successful (for the current tool,
-50/50 in each round). A tool-level `result=success` cannot hide partial
-responses such as 20/50 or 19/50.
+that drops or changes it. On BW1100, the first CAT-MLA request can spend the
+initial five-minute probe compiling and then terminate with the exact paired
+`sample_tokens` RPC timeout and `EngineDeadError` signature. DeepSeek alone
+may perform one controlled clean restart for that signature; OOM and all other
+startup failures remain non-retryable. The failed first-attempt JSON and server
+log remain archived. DeepSeek LocalDisk and POSIX use four in-flight long-doc
+requests and OpenCompass batch size four, while still requiring all 50 warmup
+and 50 query requests to succeed. A tool-level `result=success` cannot hide
+partial responses such as 20/50 or 19/50.
 
 ## Reports
 
