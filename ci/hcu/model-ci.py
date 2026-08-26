@@ -677,7 +677,7 @@ def run_command(command, cwd, timeout, log_handle, environment=None):
 
 
 def retryable_start_failure(result_path, tool_root):
-    """Only retry the reviewed CAT-MLA first-request timeout signature."""
+    """Only retry the reviewed first-request compilation timeout signature."""
     try:
         with Path(result_path).open(encoding="utf-8") as handle:
             records = json.load(handle)
@@ -876,7 +876,7 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
                     break
 
                 print(
-                    "DeepSeek CAT-MLA cold start hit the reviewed sample_tokens "
+                    "Cold start hit the reviewed sample_tokens "
                     "timeout; cleaning up and retrying once.",
                     flush=True,
                 )
@@ -1238,7 +1238,7 @@ disable-cascade-attn = true
             ],
         )
         if not retryable_start_failure(retry_result, retry_tool):
-            raise ModelCIError("the reviewed CAT-MLA cold-start failure was not retried")
+            raise ModelCIError("the reviewed cold-start failure was not retried")
         retry_log.write_text(
             "RPC call to sample_tokens timed out\n"
             "EngineDeadError: EngineCore encountered an issue\n"

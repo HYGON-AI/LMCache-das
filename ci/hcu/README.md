@@ -163,10 +163,10 @@ JUnit testcase.
 
 All DeepSeek scenarios export `VLLM_USE_CAT_MLA=1`. Their reviewed config must
 still contain `kv-cache-dtype = fp8_e4m3`; the manifest gate rejects a config
-that drops or changes it. On BW1100, the first CAT-MLA request can spend the
-initial five-minute probe compiling and then terminate with the exact paired
-`sample_tokens` RPC timeout and `EngineDeadError` signature. DeepSeek alone
-may perform one controlled clean restart for that signature; OOM and all other
+that drops or changes it. On BW1100, the first Qwen or DeepSeek request can spend
+the initial five-minute probe compiling and then terminate with the exact paired
+`sample_tokens` RPC timeout and `EngineDeadError` signature. Both models may
+perform one controlled clean restart for that signature; OOM and all other
 startup failures remain non-retryable. The failed first-attempt JSON and server
 log remain archived. DeepSeek uses 16 generated tokens per long-document request
 because a one-token MTP response can finish before producing a measurable first

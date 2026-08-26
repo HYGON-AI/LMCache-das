@@ -21,7 +21,8 @@
       "ready": true,
       "host_path": "/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B",
       "container_path": "/llm/models/Qwen3-8B",
-      "gpu_count": 2
+      "gpu_count": 2,
+      "start_model_attempts": 2
     },
     "deepseek-r1-w4a8-v2": {
       "ready": true,
