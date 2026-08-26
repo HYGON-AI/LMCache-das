@@ -47,7 +47,10 @@
     "qwen3-8b-cpu": {
       "model": "qwen3-8b",
       "backend": "cpu",
-      "config": "vllm_conf/Qwen3-8B/04_cpu.conf"
+      "config": "vllm_conf/Qwen3-8B/04_cpu.conf",
+      "config_fixes": {
+        "drop_duplicate_options": ["vllm.disable-cascade-attn"]
+      }
     },
     "qwen3-8b-localdisk": {
       "model": "qwen3-8b",

@@ -97,6 +97,9 @@ lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar
 
 Its SHA256 and embedded Git commit are pinned in `model-test-manifest.json`.
 The reviewed image supplies OpenCompass at `/lmcache_workspace/opencompass`.
+The source asset remains read-only. Weekly copies the reviewed OpenCompass tree
+to `/sandbox/opencompass-ci` before execution because OpenCompass writes task
+parameter files below its own `tmp/` directory.
 The nmz4 host CMMLU dataset at
 `/public/opendas/DL_DATA/opencompass_data/cmmlu` is mounted read-only at the
 fixed path expected by the test tool, `/public/ai_data/datasets/cmmlu`.
@@ -108,9 +111,16 @@ The fixed upstream source is read from:
 ```
 
 Each run creates only one cache subtree below the configured nmz4 root. The
-controller probes LocalDisk, SSD and POSIX subdirectories with direct I/O,
-mounts them as `/local_disk`, `/ssd` and `/mnt/parastor_storage`, and removes
-only the current run subtree after the test container is confirmed absent.
+controller probes CPU, LocalDisk, SSD and POSIX subdirectories with direct I/O,
+mounts them as `/mnt/fs1`, `/local_disk`, `/ssd` and
+`/mnt/parastor_storage`, and removes only the current run subtree after the
+test container is confirmed absent. The CPU mount preserves the fixed test
+tool's `/mnt/fs1/posix` behavior without making the container root writable.
+
+The Qwen CPU config in the fixed test-tool archive contains one duplicate
+`disable-cascade-attn` entry. The manifest authorizes removal of only that
+duplicate when CI creates the recorded effective config; the reviewed archive
+itself is never modified.
 
 ## Registered model tests
 

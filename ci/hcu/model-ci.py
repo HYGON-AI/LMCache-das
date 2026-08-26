@@ -30,6 +30,9 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TEST_TOOL_ASSET_ROOT = "/ci_public/lmcache-das/assets/test-tool/"
 ALLOWED_MODEL_ENVIRONMENT = {"VLLM_USE_CAT_MLA": {"1"}}
+ALLOWED_CONFIG_FIXES = {
+    "qwen3-8b-cpu": {"vllm.disable-cascade-attn"},
+}
 
 
 def read_json(path):
@@ -150,6 +153,17 @@ def validate_manifest(manifest):
         config = str(scenario.get("config", ""))
         if config.startswith("/") or ".." in Path(config).parts or not config.endswith(".conf"):
             raise ModelCIError("scenario {} has an unsafe config path".format(scenario_id))
+        config_fixes = scenario.get("config_fixes", {})
+        if not isinstance(config_fixes, dict) or set(config_fixes) - {"drop_duplicate_options"}:
+            raise ModelCIError("scenario {} has unsupported config fixes".format(scenario_id))
+        duplicate_options = config_fixes.get("drop_duplicate_options", [])
+        if not isinstance(duplicate_options, list) or any(
+            not isinstance(item, str) or not re.match(r"^[a-z0-9_.-]+\.[a-z0-9_.-]+$", item)
+            for item in duplicate_options
+        ):
+            raise ModelCIError("scenario {} has invalid duplicate option fixes".format(scenario_id))
+        if set(duplicate_options) != ALLOWED_CONFIG_FIXES.get(scenario_id, set()):
+            raise ModelCIError("scenario {} config fixes differ from the reviewed allowlist".format(scenario_id))
     for profile in profiles:
         value = profile_config(manifest, profile)
         devices = str(value.get("visible_devices", ""))
@@ -289,6 +303,82 @@ def parse_vllm_config(path):
     tp = parser.getint("vllm", "tensor-parallel-size", fallback=1)
     options = {name: value.strip().strip("'\"") for name, value in parser.items("vllm")}
     return model, tp, options
+
+
+def deduplicate_config_options(text, reviewed_options):
+    targets = set()
+    for value in reviewed_options:
+        section, option = value.rsplit(".", 1)
+        targets.add((section.lower(), option.lower()))
+    current_section = ""
+    seen = set()
+    removed = set()
+    result = []
+    section_pattern = re.compile(r"^\s*\[([^]]+)\]\s*$")
+    option_pattern = re.compile(r"^\s*([^#;][^:=]*?)\s*[:=]")
+    for line in text.splitlines(keepends=True):
+        section_match = section_pattern.match(line)
+        if section_match:
+            current_section = section_match.group(1).strip().lower()
+            result.append(line)
+            continue
+        option_match = option_pattern.match(line)
+        if option_match:
+            key = (current_section, option_match.group(1).strip().lower())
+            if key in targets:
+                if key in seen:
+                    removed.add(key)
+                    continue
+                seen.add(key)
+        result.append(line)
+    if removed != targets:
+        missing = sorted("{}.{}".format(*item) for item in targets - removed)
+        raise ModelCIError(
+            "reviewed duplicate config options were not found exactly as expected: {}".format(
+                ", ".join(missing)
+            )
+        )
+    return "".join(result)
+
+
+def prepare_effective_config(tool_root, scenario, case_id):
+    reviewed_root = Path(tool_root).resolve()
+    source = (reviewed_root / scenario["config"]).resolve()
+    try:
+        source.relative_to(reviewed_root)
+    except ValueError:
+        raise ModelCIError("scenario config escaped the reviewed test tool")
+    text = source.read_text(encoding="utf-8")
+    duplicate_options = scenario.get("config_fixes", {}).get(
+        "drop_duplicate_options", []
+    )
+    if duplicate_options:
+        text = deduplicate_config_options(text, duplicate_options)
+    destination_root = reviewed_root / "vllm_conf" / ".ci-effective"
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination = destination_root / "{}.conf".format(case_id)
+    destination.write_text(text, encoding="utf-8")
+    return destination
+
+
+def copy_opencompass_tree(source, destination):
+    source = Path(source).resolve()
+    destination = Path(destination)
+    if not (source / "run.py").is_file() or not (source / "opencompass").is_dir():
+        raise ModelCIError("the reviewed OpenCompass source tree is incomplete")
+    if destination.exists():
+        raise ModelCIError("the writable OpenCompass destination already exists")
+    shutil.copytree(
+        str(source),
+        str(destination),
+        ignore=shutil.ignore_patterns(
+            ".git", "__pycache__", "tmp", "work_dirs", "outputs"
+        ),
+    )
+    (destination / "tmp").mkdir(mode=0o700)
+    if not (destination / "run.py").is_file() or not (destination / "opencompass").is_dir():
+        raise ModelCIError("the writable OpenCompass copy is incomplete")
+    return destination
 
 
 def verify_tool(manifest, tool_root, profile):
@@ -464,9 +554,8 @@ def run_command(command, cwd, timeout, log_handle, environment=None):
     return return_code, time.time() - started
 
 
-def scenario_commands(manifest, tool_root, scenario_id, checks, results_dir, logs_dir, work_dir):
-    scenario = manifest["scenarios"][scenario_id]
-    config = str(tool_root / scenario["config"])
+def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir, work_dir, opencompass_dir):
+    config = str(config)
     python = sys.executable
     commands = [
         ("prepare-output", [python, "-m", "lmcache_test.prepare_output_dir", "--logs_dir", str(logs_dir), "--results_dir", str(results_dir), "--step_name", "prepare_output_dir"], 300),
@@ -478,7 +567,9 @@ def scenario_commands(manifest, tool_root, scenario_id, checks, results_dir, log
         commands.append(("long-doc", [python, "-m", "lmcache_test.long_doc_qa_tput", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "long_doc", "--timeout", str(manifest["timeouts"]["long_doc_seconds"]), "--json-output"], int(manifest["timeouts"]["long_doc_seconds"]) + 60))
         expected.append("long_doc")
     if "opencompass" in checks:
-        commands.append(("opencompass", [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", manifest["image_contract"]["opencompass_dir"], "--work_dir", str(work_dir / "opencompass"), "--timeout", str(manifest["timeouts"]["opencompass_seconds"]), "--acc-threshold", str(manifest["thresholds"]["humaneval"])], int(manifest["timeouts"]["opencompass_seconds"]) + 60))
+        if opencompass_dir is None:
+            raise ModelCIError("the scenario requires a writable OpenCompass tree")
+        commands.append(("opencompass", [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", str(opencompass_dir), "--work_dir", str(work_dir / "opencompass"), "--timeout", str(manifest["timeouts"]["opencompass_seconds"]), "--acc-threshold", str(manifest["thresholds"]["humaneval"])], int(manifest["timeouts"]["opencompass_seconds"]) + 60))
         expected.append("opencompass")
     if "cmmlu" in checks:
         commands.append(("cmmlu", [python, str(tool_root / "cases/3-vllm-func/103-vllm-demo-cmmlu_prompt_long.py"), "--vllm_conf", config, "--work_dir", str(work_dir / "cmmlu"), "--strict_log_check"], int(manifest["timeouts"]["cmmlu_seconds"])))
@@ -513,7 +604,7 @@ def write_junit(path, cases):
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
-def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_root):
+def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_root, opencompass_dir):
     case_id = "{}-repeat-{}".format(scenario_id, repeat_index)
     scenario_root = Path("/sandbox/model-runs") / case_id
     results_dir = scenario_root / "results"
@@ -523,8 +614,11 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         directory.mkdir(parents=True, exist_ok=True)
     log_path = Path(output_root) / "logs" / "model-{}.log".format(case_id)
     result_path = results_dir / "lmcache_test_result.json"
+    scenario = manifest["scenarios"][scenario_id]
+    config = prepare_effective_config(tool_root, scenario, case_id)
     commands, expected, config = scenario_commands(
-        manifest, tool_root, scenario_id, checks, results_dir, logs_dir, work_dir
+        manifest, tool_root, config, checks, results_dir, logs_dir, work_dir,
+        opencompass_dir
     )
     model = manifest["models"][manifest["scenarios"][scenario_id]["model"]]
     scenario_environment = dict(model.get("environment", {}))
@@ -633,6 +727,7 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         "failure": failure,
         "result_file": raw_destination.name if raw_destination.exists() else None,
         "config_sha256": sha256_file(config_destination),
+        "config_fixes": dict(scenario.get("config_fixes", {})),
         "environment": scenario_environment,
     }
 
@@ -656,6 +751,7 @@ def cmd_run(args):
         "tool_commit": manifest["tool"]["commit"] if runs else None,
         "models": [],
     }
+    runtime_opencompass_dir = None
     if runs:
         if tool_root is None:
             raise ModelCIError("the selected profile requires a test tool checkout")
@@ -666,16 +762,24 @@ def cmd_run(args):
         if "opencompass" in required_checks:
             opencompass_root = Path(manifest["image_contract"]["opencompass_dir"])
             candidates = (opencompass_root, opencompass_root / "opencompass")
-            if not any(
-                (candidate / "run.py").is_file()
+            source_opencompass = next((
+                candidate for candidate in candidates
+                if (candidate / "run.py").is_file()
                 and (candidate / "opencompass").is_dir()
-                for candidate in candidates
-            ):
+            ), None)
+            if source_opencompass is None:
                 raise ModelCIError(
                     "the reviewed OpenCompass tree is missing below {}".format(
                         opencompass_root
                     )
                 )
+            runtime_opencompass_dir = copy_opencompass_tree(
+                source_opencompass, Path("/sandbox/opencompass-ci")
+            )
+            asset_manifest["opencompass"] = {
+                "source": str(source_opencompass),
+                "runtime_copy": str(runtime_opencompass_dir),
+            }
         if "cmmlu" in required_checks:
             cmmlu_root = Path(manifest["image_contract"]["cmmlu_dataset_dir"])
             if not cmmlu_root.is_dir() or not next(cmmlu_root.rglob("*.csv"), None):
@@ -709,6 +813,7 @@ def cmd_run(args):
                     run["checks"],
                     repeat_index,
                     output_root,
+                    runtime_opencompass_dir,
                 )
             )
     write_junit(output_root / "reports" / "model-junit.xml", cases)
@@ -735,6 +840,28 @@ def cmd_result_gate(args):
 def cmd_selftest(_args):
     with tempfile.TemporaryDirectory(prefix="lmcache-model-ci-") as temporary:
         root = Path(temporary)
+        duplicate_config = """[vllm]
+disable-cascade-attn = true
+trust-remote-code = true
+disable-cascade-attn = true
+"""
+        fixed_config = deduplicate_config_options(
+            duplicate_config, ["vllm.disable-cascade-attn"]
+        )
+        if fixed_config.count("disable-cascade-attn") != 1:
+            raise ModelCIError("the reviewed duplicate config option was not removed")
+        opencompass_source = root / "opencompass-source"
+        (opencompass_source / "opencompass").mkdir(parents=True)
+        (opencompass_source / "run.py").write_text("# test\n", encoding="utf-8")
+        (opencompass_source / "opencompass" / "__init__.py").write_text(
+            "", encoding="utf-8"
+        )
+        (opencompass_source / "tmp").mkdir()
+        opencompass_copy = copy_opencompass_tree(
+            opencompass_source, root / "opencompass-copy"
+        )
+        if not (opencompass_copy / "tmp").is_dir():
+            raise ModelCIError("the writable OpenCompass tree was not prepared")
         command_log = io.StringIO()
         action_log = io.StringIO()
         with contextlib.redirect_stdout(action_log):

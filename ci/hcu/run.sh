@@ -213,15 +213,16 @@ validate_cache_root() {
     [[ -d "${CACHE_ROOT}" && ! -L "${CACHE_ROOT}" ]]
     ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
     [[ ! -e "${CACHE_RUN_ROOT}" ]]
-    mkdir -p "${CACHE_RUN_ROOT}/localdisk" "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
+    mkdir -p "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
+        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
     # Docker user-namespace remapping means container root is not the host
     # runner user. These run-scoped, non-secret cache mounts must be writable
     # by that remapped identity; the parent remains private and the complete
     # run directory is removed during finalization.
-    chmod 0777 "${CACHE_RUN_ROOT}/localdisk" \
+    chmod 0777 "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
         "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
     local directory probe
-    for directory in localdisk ssd posix; do
+    for directory in cpu localdisk ssd posix; do
         probe="${CACHE_RUN_ROOT}/${directory}/.direct-io-probe"
         dd if=/dev/zero of="${probe}" bs=4096 count=1 oflag=direct status=none
         rm -f -- "${probe}"
@@ -378,6 +379,7 @@ start_test_container() {
         network_name="${NETWORK_NAME}"
         optional_mounts+=(
             --mount "type=bind,src=${TEST_TOOL_ROOT},dst=/input/test-tool,readonly"
+            --mount "type=bind,src=${CACHE_RUN_ROOT}/cpu,dst=/mnt/fs1"
             --mount "type=bind,src=${CACHE_RUN_ROOT}/localdisk,dst=/local_disk"
             --mount "type=bind,src=${CACHE_RUN_ROOT}/ssd,dst=/ssd"
             --mount "type=bind,src=${CACHE_RUN_ROOT}/posix,dst=/mnt/parastor_storage"
