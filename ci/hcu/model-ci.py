@@ -36,6 +36,7 @@ ALLOWED_CONFIG_FIXES = {
 ALLOWED_LONG_DOC_OPTIONS = {
     "document_length": (1024, 65536),
     "num_documents": (1, 100),
+    "output_len": (1, 256),
     "max_inflight_requests": (1, 64),
 }
 ALLOWED_OPENCOMPASS_OPTIONS = {
@@ -741,6 +742,7 @@ def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir
         option_flags = {
             "document_length": "--document-length",
             "num_documents": "--num-documents",
+            "output_len": "--output-len",
             "max_inflight_requests": "--max-inflight-requests",
         }
         for name, value in sorted(scenario.get("long_doc_options", {}).items()):
@@ -1192,24 +1194,30 @@ disable-cascade-attn = true
             "timeouts": {
                 "start_model_seconds": 3600,
                 "start_api_seconds": 300,
+                "long_doc_seconds": 1800,
             }
         }
         startup_commands, _, _ = scenario_commands(
             timeout_manifest,
             root,
             root / "model.conf",
-            [],
+            ["long_doc"],
             root / "results",
             root / "logs",
             root / "work",
             None,
-            {},
+            {"long_doc_options": {"output_len": 16}},
         )
         startup_command = next(
             command for name, command, _ in startup_commands if name == "start-model"
         )
         if startup_command[-2:] != ["--api_timeout", "300"]:
             raise ModelCIError("the reviewed model startup request timeout was not applied")
+        long_doc_command = next(
+            command for name, command, _ in startup_commands if name == "long-doc"
+        )
+        if long_doc_command[-2:] != ["--output-len", "16"]:
+            raise ModelCIError("the reviewed long-document output length was not applied")
         retry_tool = root / "retry-tool"
         retry_log = retry_tool / "lmcache_test" / "logs" / "model.log"
         retry_log.parent.mkdir(parents=True)

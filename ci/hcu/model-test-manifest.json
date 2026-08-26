@@ -75,6 +75,7 @@
       "long_doc_validation": "cpu_memory",
       "long_doc_options": {
         "num_documents": 4,
+        "output_len": 16,
         "max_inflight_requests": 4
       }
     },
@@ -84,6 +85,7 @@
       "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf",
       "long_doc_options": {
         "num_documents": 50,
+        "output_len": 16,
         "max_inflight_requests": 4
       },
       "opencompass_options": {
@@ -96,6 +98,7 @@
       "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf",
       "long_doc_options": {
         "num_documents": 50,
+        "output_len": 16,
         "max_inflight_requests": 4
       },
       "opencompass_options": {

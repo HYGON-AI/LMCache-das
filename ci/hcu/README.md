@@ -168,10 +168,11 @@ initial five-minute probe compiling and then terminate with the exact paired
 `sample_tokens` RPC timeout and `EngineDeadError` signature. DeepSeek alone
 may perform one controlled clean restart for that signature; OOM and all other
 startup failures remain non-retryable. The failed first-attempt JSON and server
-log remain archived. DeepSeek LocalDisk and POSIX use four in-flight long-doc
-requests and OpenCompass batch size four, while still requiring all 50 warmup
-and 50 query requests to succeed. A tool-level `result=success` cannot hide
-partial responses such as 20/50 or 19/50.
+log remain archived. DeepSeek uses 16 generated tokens per long-document request
+because a one-token MTP response can finish before producing a measurable first
+token. LocalDisk and POSIX use four in-flight requests and OpenCompass batch size
+four, while still requiring all 50 warmup and 50 query requests to succeed. A
+tool-level `result=success` cannot hide partial responses such as 20/50 or 19/50.
 
 ## Reports
 
