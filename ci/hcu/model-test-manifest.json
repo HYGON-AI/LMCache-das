@@ -90,7 +90,7 @@
         "max_inflight_requests": 4
       },
       "opencompass_options": {
-        "batch_size": 4
+        "batch_size": 32
       }
     },
     "deepseek-r1-w4a8-v2-posix": {
@@ -103,7 +103,7 @@
         "max_inflight_requests": 4
       },
       "opencompass_options": {
-        "batch_size": 4
+        "batch_size": 32
       }
     },
     "glm-5-localdisk": {
