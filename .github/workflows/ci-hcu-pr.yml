@@ -64,6 +64,9 @@ jobs:
       - name: Checkout PR merge result
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          # GitHub may expose a stale pull_request.merge_commit_sha during a
+          # synchronize event.  Checkout the current merge ref, then let the
+          # trusted controller verify its parents against base.sha/head.sha.
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           path: source
           persist-credentials: false
@@ -78,7 +81,6 @@ jobs:
         env:
           HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
           HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
           HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
         run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
 
@@ -87,7 +89,6 @@ jobs:
         env:
           HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
           HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
           HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
         run: |
           if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
@@ -106,7 +107,6 @@ jobs:
         env:
           HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
           HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
           HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
         run: |
           if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
@@ -125,7 +125,6 @@ jobs:
         env:
           HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
           HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
           HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
         run: |
           if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]]; then
@@ -144,7 +143,6 @@ jobs:
         env:
           HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
           HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_SOURCE_SHA_HINT: ${{ github.event.pull_request.merge_commit_sha }}
           HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
         run: |
           set +e
