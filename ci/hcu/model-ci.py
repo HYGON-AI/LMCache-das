@@ -29,6 +29,7 @@ TOKEN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TEST_TOOL_ASSET_ROOT = "/ci_public/lmcache-das/assets/test-tool/"
+ALLOWED_MODEL_ENVIRONMENT = {"VLLM_USE_CAT_MLA": {"1"}}
 
 
 def read_json(path):
@@ -103,6 +104,15 @@ def validate_manifest(manifest):
     profiles = manifest.get("profiles")
     if not all(isinstance(item, dict) for item in (models, scenarios, profiles)):
         raise ModelCIError("models, scenarios and profiles must be objects")
+    image_contract = manifest.get("image_contract")
+    if not isinstance(image_contract, dict):
+        raise ModelCIError("image_contract must be an object")
+    if image_contract.get("opencompass_dir") != "/lmcache_workspace/opencompass":
+        raise ModelCIError("the reviewed OpenCompass root changed")
+    if image_contract.get("cmmlu_dataset_host_path") != "/public/opendas/DL_DATA/opencompass_data/cmmlu":
+        raise ModelCIError("the reviewed CMMLU host path changed")
+    if image_contract.get("cmmlu_dataset_dir") != "/public/ai_data/datasets/cmmlu":
+        raise ModelCIError("the reviewed CMMLU container path changed")
     for model_id, model in models.items():
         if not TOKEN.match(model_id) or not isinstance(model, dict):
             raise ModelCIError("invalid model declaration: {}".format(model_id))
@@ -116,6 +126,22 @@ def validate_manifest(manifest):
             raise ModelCIError("model {} has an unsupported GPU count".format(model_id))
         if not model["ready"] and not model.get("blocked_reason"):
             raise ModelCIError("blocked model {} has no reason".format(model_id))
+        environment = model.get("environment", {})
+        if not isinstance(environment, dict):
+            raise ModelCIError("model {} environment must be an object".format(model_id))
+        for name, value in environment.items():
+            if name not in ALLOWED_MODEL_ENVIRONMENT or str(value) not in ALLOWED_MODEL_ENVIRONMENT[name]:
+                raise ModelCIError(
+                    "model {} has an unreviewed environment value {}={!r}".format(
+                        model_id, name, value
+                    )
+                )
+        required_options = model.get("required_vllm_options", {})
+        if not isinstance(required_options, dict):
+            raise ModelCIError("model {} required_vllm_options must be an object".format(model_id))
+        for name, value in required_options.items():
+            if not TOKEN.match(str(name)) or not str(value):
+                raise ModelCIError("model {} has an invalid required vLLM option".format(model_id))
     for scenario_id, scenario in scenarios.items():
         if not TOKEN.match(scenario_id) or not isinstance(scenario, dict):
             raise ModelCIError("invalid scenario: {}".format(scenario_id))
@@ -182,6 +208,19 @@ def cmd_mounts(args):
     manifest = load_manifest(args.manifest)
     for _model_id, model in selected_models(manifest, args.profile):
         print("{}\t{}".format(model["host_path"], model["container_path"]))
+    checks = {
+        check
+        for run in selected_runs(manifest, args.profile)
+        for check in run["checks"]
+    }
+    if "cmmlu" in checks:
+        contract = manifest["image_contract"]
+        print(
+            "{}\t{}".format(
+                contract["cmmlu_dataset_host_path"],
+                contract["cmmlu_dataset_dir"],
+            )
+        )
     return 0
 
 
@@ -248,7 +287,8 @@ def parse_vllm_config(path):
         raise ModelCIError("missing [vllm] section in {}".format(path))
     model = parser.get("vllm", "model", fallback="").strip().strip("'\"")
     tp = parser.getint("vllm", "tensor-parallel-size", fallback=1)
-    return model, tp
+    options = {name: value.strip().strip("'\"") for name, value in parser.items("vllm")}
+    return model, tp, options
 
 
 def verify_tool(manifest, tool_root, profile):
@@ -280,7 +320,7 @@ def verify_tool(manifest, tool_root, profile):
         config = tool_root / scenario["config"]
         if not config.is_file():
             raise ModelCIError("scenario {} is missing {}".format(scenario_id, scenario["config"]))
-        configured_model, tensor_parallel = parse_vllm_config(config)
+        configured_model, tensor_parallel, vllm_options = parse_vllm_config(config)
         if configured_model != model["container_path"]:
             raise ModelCIError(
                 "scenario {} model path {} does not match {}".format(
@@ -293,12 +333,22 @@ def verify_tool(manifest, tool_root, profile):
                     scenario_id, tensor_parallel, model["gpu_count"]
                 )
             )
+        for option, expected_value in model.get("required_vllm_options", {}).items():
+            actual_value = vllm_options.get(option)
+            if actual_value != str(expected_value):
+                raise ModelCIError(
+                    "scenario {} requires {}={!r}, found {!r}".format(
+                        scenario_id, option, expected_value, actual_value
+                    )
+                )
         assets.append(
             {
                 "scenario": scenario_id,
                 "config": scenario["config"],
                 "config_sha256": sha256_file(config),
                 "checks": run["checks"],
+                "environment": dict(model.get("environment", {})),
+                "required_vllm_options": dict(model.get("required_vllm_options", {})),
             }
         )
     return {"tool_commit": commit, "profile": profile, "scenarios": assets}
@@ -311,7 +361,36 @@ def cmd_verify_tool(args):
     return 0
 
 
-def validate_result_records(path, expected_steps):
+def require_integer(record, name):
+    value = record.get(name)
+    if isinstance(value, bool):
+        raise ModelCIError("{} is not an integer".format(name))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ModelCIError("{} is not an integer".format(name))
+
+
+def validate_complete_long_doc(record):
+    details = record.get("long_doc_qa_result")
+    if not isinstance(details, dict):
+        raise ModelCIError("long_doc result is missing long_doc_qa_result")
+    if record.get("long_doc_qa_tput_result") is not True:
+        raise ModelCIError("long_doc_qa_tput_result is not true")
+    for phase in ("warmup", "query"):
+        total_name = "{}_round_prompt_count".format(phase)
+        success_name = "{}_round_successful_prompt_count".format(phase)
+        total = require_integer(details, total_name)
+        successful = require_integer(details, success_name)
+        if total <= 0 or successful != total:
+            raise ModelCIError(
+                "long_doc {} completed {}/{} requests".format(
+                    phase, successful, total
+                )
+            )
+
+
+def validate_result_records(path, expected_steps, require_complete_long_doc=True):
     with Path(path).open(encoding="utf-8") as handle:
         records = json.load(handle)
     if not isinstance(records, list):
@@ -330,12 +409,17 @@ def validate_result_records(path, expected_steps):
             problems.append("{} appears {} times".format(step, len(matches)))
         elif matches[0].get("result") != "success":
             problems.append("{} result is {!r}".format(step, matches[0].get("result")))
+        elif step == "long_doc" and require_complete_long_doc:
+            try:
+                validate_complete_long_doc(matches[0])
+            except ModelCIError as exc:
+                problems.append(str(exc))
     if problems:
         raise ModelCIError("; ".join(problems))
     return records
 
 
-def run_command(command, cwd, timeout, log_handle):
+def run_command(command, cwd, timeout, log_handle, environment=None):
     started = time.time()
     command_line = "$ {}\n".format(" ".join(command))
     log_handle.write(command_line)
@@ -357,6 +441,7 @@ def run_command(command, cwd, timeout, log_handle):
         stderr=subprocess.STDOUT,
         universal_newlines=True,
         bufsize=1,
+        env=environment,
     )
     reader = threading.Thread(target=copy_output, args=(process.stdout,))
     reader.daemon = True
@@ -441,11 +526,26 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
     commands, expected, config = scenario_commands(
         manifest, tool_root, scenario_id, checks, results_dir, logs_dir, work_dir
     )
+    model = manifest["models"][manifest["scenarios"][scenario_id]["model"]]
+    scenario_environment = dict(model.get("environment", {}))
+    command_environment = os.environ.copy()
+    command_environment.update(scenario_environment)
     failure = None
     duration = 0.0
     cmmlu_rc = None
     model_log_printed = False
     with log_path.open("w", encoding="utf-8", errors="replace") as log_handle:
+        if scenario_environment:
+            environment_line = "# reviewed environment: {}\n".format(
+                " ".join(
+                    "{}={}".format(name, scenario_environment[name])
+                    for name in sorted(scenario_environment)
+                )
+            )
+            log_handle.write(environment_line)
+            log_handle.flush()
+            sys.stdout.write(environment_line)
+            sys.stdout.flush()
         for step, command, timeout in commands:
             stream = "server" if step == "print-model-log" else "client"
             print(
@@ -453,7 +553,9 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
                 flush=True,
             )
             try:
-                rc, elapsed = run_command(command, tool_root, timeout, log_handle)
+                rc, elapsed = run_command(
+                    command, tool_root, timeout, log_handle, command_environment
+                )
             finally:
                 print("::endgroup::", flush=True)
             duration += elapsed
@@ -477,7 +579,9 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
                 flush=True,
             )
             try:
-                _, elapsed = run_command(command, tool_root, timeout, log_handle)
+                _, elapsed = run_command(
+                    command, tool_root, timeout, log_handle, command_environment
+                )
             finally:
                 print("::endgroup::", flush=True)
             duration += elapsed
@@ -498,6 +602,7 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
             tool_root,
             int(manifest["timeouts"]["cleanup_seconds"]),
             log_handle,
+            command_environment,
         )
         duration += elapsed
         expected.append("clean_kvcache")
@@ -507,7 +612,11 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
     if result_path.is_file():
         shutil.copyfile(str(result_path), str(raw_destination))
         try:
-            validate_result_records(raw_destination, expected)
+            validate_result_records(
+                raw_destination,
+                expected,
+                bool(manifest["thresholds"].get("long_doc_require_all_requests", True)),
+            )
         except Exception as exc:
             failure = failure or str(exc)
     else:
@@ -524,6 +633,7 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         "failure": failure,
         "result_file": raw_destination.name if raw_destination.exists() else None,
         "config_sha256": sha256_file(config_destination),
+        "environment": scenario_environment,
     }
 
 
@@ -550,6 +660,30 @@ def cmd_run(args):
         if tool_root is None:
             raise ModelCIError("the selected profile requires a test tool checkout")
         verification = verify_tool(manifest, tool_root, args.profile)
+        required_checks = {
+            check for run in runs for check in run["checks"]
+        }
+        if "opencompass" in required_checks:
+            opencompass_root = Path(manifest["image_contract"]["opencompass_dir"])
+            candidates = (opencompass_root, opencompass_root / "opencompass")
+            if not any(
+                (candidate / "run.py").is_file()
+                and (candidate / "opencompass").is_dir()
+                for candidate in candidates
+            ):
+                raise ModelCIError(
+                    "the reviewed OpenCompass tree is missing below {}".format(
+                        opencompass_root
+                    )
+                )
+        if "cmmlu" in required_checks:
+            cmmlu_root = Path(manifest["image_contract"]["cmmlu_dataset_dir"])
+            if not cmmlu_root.is_dir() or not next(cmmlu_root.rglob("*.csv"), None):
+                raise ModelCIError(
+                    "the reviewed CMMLU dataset is missing below {}".format(
+                        cmmlu_root
+                    )
+                )
         for model_id, model in selected_models(manifest, args.profile):
             model_path = Path(model["container_path"])
             if not model_path.is_dir():
@@ -559,6 +693,8 @@ def cmd_run(args):
                     "id": model_id,
                     "path": str(model_path),
                     "gpu_count": model["gpu_count"],
+                    "environment": dict(model.get("environment", {})),
+                    "required_vllm_options": dict(model.get("required_vllm_options", {})),
                 }
             )
         asset_manifest["test_tool"] = verification
@@ -622,9 +758,31 @@ def cmd_selftest(_args):
             pass
         else:
             raise ModelCIError("a false-green tool result was accepted")
+        complete_long_doc = {
+            "step_name": "long_doc",
+            "result": "success",
+            "long_doc_qa_tput_result": True,
+            "long_doc_qa_result": {
+                "warmup_round_prompt_count": 50,
+                "warmup_round_successful_prompt_count": 50,
+                "query_round_prompt_count": 50,
+                "query_round_successful_prompt_count": 50,
+            },
+        }
         passed = root / "passed.json"
-        write_json(passed, [{"step_name": "long_doc", "result": "success"}])
+        write_json(passed, [complete_long_doc])
         validate_result_records(passed, ["long_doc"])
+        partial = root / "partial.json"
+        partial_long_doc = dict(complete_long_doc)
+        partial_long_doc["long_doc_qa_result"] = dict(complete_long_doc["long_doc_qa_result"])
+        partial_long_doc["long_doc_qa_result"]["query_round_successful_prompt_count"] = 19
+        write_json(partial, [partial_long_doc])
+        try:
+            validate_result_records(partial, ["long_doc"])
+        except ModelCIError:
+            pass
+        else:
+            raise ModelCIError("a partial long-document result was accepted")
         duplicate = root / "duplicate.json"
         write_json(
             duplicate,
