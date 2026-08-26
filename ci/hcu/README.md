@@ -130,6 +130,13 @@ gates. Missing, duplicate, malformed or `failed` records fail the scenario even
 when the developer script exits zero. Every scenario/repetition becomes one
 JUnit testcase.
 
+All DeepSeek scenarios export `VLLM_USE_CAT_MLA=1`. Their reviewed config must
+still contain `kv-cache-dtype = fp8_e4m3`; the manifest gate rejects a config
+that drops or changes it. Long-document runs pass only when both warmup and
+query report every requested prompt as successful (for the current tool,
+50/50 in each round). A tool-level `result=success` cannot hide partial
+responses such as 20/50 or 19/50.
+
 ## Reports
 
 Results are atomically published under:
