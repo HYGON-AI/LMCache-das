@@ -96,6 +96,10 @@ lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar
 ```
 
 Its SHA256 and embedded Git commit are pinned in `model-test-manifest.json`.
+The reviewed image supplies OpenCompass at `/lmcache_workspace/opencompass`.
+The nmz4 host CMMLU dataset at
+`/public/opendas/DL_DATA/opencompass_data/cmmlu` is mounted read-only at the
+fixed path expected by the test tool, `/public/ai_data/datasets/cmmlu`.
 
 The fixed upstream source is read from:
 
@@ -129,6 +133,13 @@ The model runner treats process exit codes and JSON content as independent
 gates. Missing, duplicate, malformed or `failed` records fail the scenario even
 when the developer script exits zero. Every scenario/repetition becomes one
 JUnit testcase.
+
+All DeepSeek scenarios export `VLLM_USE_CAT_MLA=1`. Their reviewed config must
+still contain `kv-cache-dtype = fp8_e4m3`; the manifest gate rejects a config
+that drops or changes it. Long-document runs pass only when both warmup and
+query report every requested prompt as successful (for the current tool,
+50/50 in each round). A tool-level `result=success` cannot hide partial
+responses such as 20/50 or 19/50.
 
 ## Reports
 
