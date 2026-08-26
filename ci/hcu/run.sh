@@ -232,7 +232,13 @@ model_mount_arguments() {
     model_tests_required || return 0
     local host_path container_path
     while IFS=$'\t' read -r host_path container_path; do
-        [[ "${host_path}" == /public/* && "${container_path}" == /llm/models/* ]]
+        if [[ "${container_path}" == /llm/models/* ]]; then
+            [[ "${host_path}" == /public/* ]]
+        elif [[ "${container_path}" == "/public/ai_data/datasets/cmmlu" ]]; then
+            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data/cmmlu" ]]
+        else
+            return 3
+        fi
         [[ -d "${host_path}" && ! -L "${host_path}" ]]
         printf '%s\0' --mount "type=bind,src=${host_path},dst=${container_path},readonly"
     done < <(python3 "${MODEL_HELPER}" mounts \
