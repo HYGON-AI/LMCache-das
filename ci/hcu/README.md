@@ -19,11 +19,13 @@ Run HCU test suite
 Cleanup, validate and publish
 ```
 
-The trusted controller comes from the protected target branch. The selected PR
-merge or manual revision is mounted read-only into a restricted container. A
-disposable source copy is used to build exactly one wheel, and that same wheel
-and virtual environment are reused for source-patch checks, pytest and model
-tests. The original checkout is never built in place.
+The trusted controller comes from the protected target branch. For PR runs it
+checks out GitHub's current merge ref and verifies that its two parents exactly
+match the event's base and head revisions before executing untrusted code. The
+selected PR merge or manual revision is mounted read-only into a restricted
+container. A disposable source copy is used to build exactly one wheel, and
+that same wheel and virtual environment are reused for source-patch checks,
+pytest and model tests. The original checkout is never built in place.
 
 The fixed test-tool tar archive is read from the nmz4 `/ci_public` asset tree.
 The trusted host verifies its SHA256, rejects unsafe archive entries, verifies
