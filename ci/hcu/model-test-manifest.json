@@ -27,7 +27,13 @@
       "ready": true,
       "host_path": "/public/opendas/DL_DATA/llm-models/vllm-w8a8-models/DeepSeek-R1-0528-W4A8-V2",
       "container_path": "/llm/models/DeepSeek-R1-0528-Channel-INT4-w4a8",
-      "gpu_count": 8
+      "gpu_count": 8,
+      "environment": {
+        "VLLM_USE_CAT_MLA": "1"
+      },
+      "required_vllm_options": {
+        "kv-cache-dtype": "fp8_e4m3"
+      }
     },
     "glm-5": {
       "ready": false,
@@ -123,7 +129,8 @@
   },
   "thresholds": {
     "humaneval": 70.0,
-    "gsm8k": 70.0
+    "gsm8k": 70.0,
+    "long_doc_require_all_requests": true
   },
   "image_contract": {
     "opencompass_dir": "/opt/opencompass",
