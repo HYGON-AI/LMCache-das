@@ -64,7 +64,9 @@ jobs:
       - name: Checkout PR merge result
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          # Pin the immutable merge commit from this event.  The moving
+          # refs/pull/<n>/merge ref can change before this runner starts.
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           path: source
           persist-credentials: false
           fetch-depth: 2
