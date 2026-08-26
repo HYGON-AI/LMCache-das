@@ -96,6 +96,10 @@ lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar
 ```
 
 Its SHA256 and embedded Git commit are pinned in `model-test-manifest.json`.
+The reviewed image supplies OpenCompass at `/lmcache_workspace/opencompass`.
+The nmz4 host CMMLU dataset at
+`/public/opendas/DL_DATA/opencompass_data/cmmlu` is mounted read-only at the
+fixed path expected by the test tool, `/public/ai_data/datasets/cmmlu`.
 
 The fixed upstream source is read from:
 
