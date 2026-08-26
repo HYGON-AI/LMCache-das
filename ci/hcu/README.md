@@ -100,9 +100,18 @@ The reviewed image supplies OpenCompass at `/lmcache_workspace/opencompass`.
 The source asset remains read-only. Weekly copies the reviewed OpenCompass tree
 to `/sandbox/opencompass-ci` before execution because OpenCompass writes task
 parameter files below its own `tmp/` directory.
-The nmz4 host CMMLU dataset at
-`/public/opendas/DL_DATA/opencompass_data/cmmlu` is mounted read-only at the
-fixed path expected by the test tool, `/public/ai_data/datasets/cmmlu`.
+The nmz4 evaluation datasets at
+`/public/opendas/DL_DATA/opencompass_data` are mounted read-only at
+`/public/ai_data/datasets`. This reviewed root provides HumanEval, GSM8K and
+CMMLU without allowing evaluation jobs to access the network.
+
+The supplied long-document wrapper assumes every cache backend has a filesystem
+offload path. Pure CPU-memory scenarios do not, so the wrapper reports failure
+even when its requests and cache operations are valid. For those two reviewed
+CPU scenarios only, CI uses four 32K documents (bounded by the configured 32 GiB
+CPU cache) and independently requires complete warmup/query requests, a lower
+query TTFT, positive stored/retrieve/load counters, and no filesystem backend.
+The original tool JSON and exit code remain archived.
 
 The fixed upstream source is read from:
 

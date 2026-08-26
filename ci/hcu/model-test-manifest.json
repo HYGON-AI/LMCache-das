@@ -48,6 +48,11 @@
       "model": "qwen3-8b",
       "backend": "cpu",
       "config": "vllm_conf/Qwen3-8B/04_cpu.conf",
+      "long_doc_validation": "cpu_memory",
+      "long_doc_options": {
+        "num_documents": 4,
+        "max_inflight_requests": 4
+      },
       "config_fixes": {
         "drop_duplicate_options": ["vllm.disable-cascade-attn"]
       }
@@ -65,7 +70,12 @@
     "deepseek-r1-w4a8-v2-cpu": {
       "model": "deepseek-r1-w4a8-v2",
       "backend": "cpu",
-      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/04_cpu.conf"
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/04_cpu.conf",
+      "long_doc_validation": "cpu_memory",
+      "long_doc_options": {
+        "num_documents": 4,
+        "max_inflight_requests": 4
+      }
     },
     "deepseek-r1-w4a8-v2-localdisk": {
       "model": "deepseek-r1-w4a8-v2",
@@ -137,7 +147,7 @@
   },
   "image_contract": {
     "opencompass_dir": "/lmcache_workspace/opencompass",
-    "cmmlu_dataset_host_path": "/public/opendas/DL_DATA/opencompass_data/cmmlu",
-    "cmmlu_dataset_dir": "/public/ai_data/datasets/cmmlu"
+    "dataset_host_path": "/public/opendas/DL_DATA/opencompass_data",
+    "dataset_dir": "/public/ai_data/datasets"
   }
 }

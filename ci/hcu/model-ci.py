@@ -33,6 +33,12 @@ ALLOWED_MODEL_ENVIRONMENT = {"VLLM_USE_CAT_MLA": {"1"}}
 ALLOWED_CONFIG_FIXES = {
     "qwen3-8b-cpu": {"vllm.disable-cascade-attn"},
 }
+ALLOWED_LONG_DOC_OPTIONS = {
+    "document_length": (1024, 65536),
+    "num_documents": (1, 100),
+    "max_inflight_requests": (1, 64),
+}
+ALLOWED_LONG_DOC_VALIDATIONS = {"tool", "cpu_memory"}
 
 
 def read_json(path):
@@ -112,10 +118,10 @@ def validate_manifest(manifest):
         raise ModelCIError("image_contract must be an object")
     if image_contract.get("opencompass_dir") != "/lmcache_workspace/opencompass":
         raise ModelCIError("the reviewed OpenCompass root changed")
-    if image_contract.get("cmmlu_dataset_host_path") != "/public/opendas/DL_DATA/opencompass_data/cmmlu":
-        raise ModelCIError("the reviewed CMMLU host path changed")
-    if image_contract.get("cmmlu_dataset_dir") != "/public/ai_data/datasets/cmmlu":
-        raise ModelCIError("the reviewed CMMLU container path changed")
+    if image_contract.get("dataset_host_path") != "/public/opendas/DL_DATA/opencompass_data":
+        raise ModelCIError("the reviewed evaluation dataset host path changed")
+    if image_contract.get("dataset_dir") != "/public/ai_data/datasets":
+        raise ModelCIError("the reviewed evaluation dataset container path changed")
     for model_id, model in models.items():
         if not TOKEN.match(model_id) or not isinstance(model, dict):
             raise ModelCIError("invalid model declaration: {}".format(model_id))
@@ -164,6 +170,20 @@ def validate_manifest(manifest):
             raise ModelCIError("scenario {} has invalid duplicate option fixes".format(scenario_id))
         if set(duplicate_options) != ALLOWED_CONFIG_FIXES.get(scenario_id, set()):
             raise ModelCIError("scenario {} config fixes differ from the reviewed allowlist".format(scenario_id))
+        long_doc_validation = scenario.get("long_doc_validation", "tool")
+        if long_doc_validation not in ALLOWED_LONG_DOC_VALIDATIONS:
+            raise ModelCIError("scenario {} has an invalid long-document validation".format(scenario_id))
+        if (scenario.get("backend") == "cpu") != (long_doc_validation == "cpu_memory"):
+            raise ModelCIError("scenario {} has a mismatched CPU validation policy".format(scenario_id))
+        long_doc_options = scenario.get("long_doc_options", {})
+        if not isinstance(long_doc_options, dict) or set(long_doc_options) - set(ALLOWED_LONG_DOC_OPTIONS):
+            raise ModelCIError("scenario {} has invalid long-document options".format(scenario_id))
+        for name, value in long_doc_options.items():
+            lower, upper = ALLOWED_LONG_DOC_OPTIONS[name]
+            if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
+                raise ModelCIError(
+                    "scenario {} has an invalid {} value".format(scenario_id, name)
+                )
     for profile in profiles:
         value = profile_config(manifest, profile)
         devices = str(value.get("visible_devices", ""))
@@ -227,12 +247,12 @@ def cmd_mounts(args):
         for run in selected_runs(manifest, args.profile)
         for check in run["checks"]
     }
-    if "cmmlu" in checks:
+    if checks & {"opencompass", "cmmlu"}:
         contract = manifest["image_contract"]
         print(
             "{}\t{}".format(
-                contract["cmmlu_dataset_host_path"],
-                contract["cmmlu_dataset_dir"],
+                contract["dataset_host_path"],
+                contract["dataset_dir"],
             )
         )
     return 0
@@ -461,17 +481,23 @@ def require_integer(record, name):
         raise ModelCIError("{} is not an integer".format(name))
 
 
-def validate_complete_long_doc(record):
+def validate_complete_long_doc(record, require_tool_success=True, expected_prompts=None):
     details = record.get("long_doc_qa_result")
     if not isinstance(details, dict):
         raise ModelCIError("long_doc result is missing long_doc_qa_result")
-    if record.get("long_doc_qa_tput_result") is not True:
+    if require_tool_success and record.get("long_doc_qa_tput_result") is not True:
         raise ModelCIError("long_doc_qa_tput_result is not true")
     for phase in ("warmup", "query"):
         total_name = "{}_round_prompt_count".format(phase)
         success_name = "{}_round_successful_prompt_count".format(phase)
         total = require_integer(details, total_name)
         successful = require_integer(details, success_name)
+        if expected_prompts is not None and total != expected_prompts:
+            raise ModelCIError(
+                "long_doc {} declared {} requests instead of {}".format(
+                    phase, total, expected_prompts
+                )
+            )
         if total <= 0 or successful != total:
             raise ModelCIError(
                 "long_doc {} completed {}/{} requests".format(
@@ -480,7 +506,39 @@ def validate_complete_long_doc(record):
             )
 
 
-def validate_result_records(path, expected_steps, require_complete_long_doc=True):
+def validate_cpu_memory_long_doc(record, expected_prompts):
+    validate_complete_long_doc(
+        record, require_tool_success=False, expected_prompts=expected_prompts
+    )
+    details = record["long_doc_qa_result"]
+    try:
+        warmup = float(details["warmup_round_mean_TTFT_seconds"])
+        query = float(details["query_round_mean_TTFT_seconds"])
+    except (KeyError, TypeError, ValueError):
+        raise ModelCIError("CPU long_doc result is missing numeric TTFT metrics")
+    if query >= warmup:
+        raise ModelCIError(
+            "CPU long_doc query TTFT {:.3f}s is not below warmup {:.3f}s".format(
+                query, warmup
+            )
+        )
+    stats = record.get("lmcache_log_stats")
+    if not isinstance(stats, dict):
+        raise ModelCIError("CPU long_doc result is missing LMCache log statistics")
+    for name in ("stored_count", "retrieve_count", "need_to_load_count"):
+        if require_integer(stats, name) <= 0:
+            raise ModelCIError("CPU long_doc {} is not positive".format(name))
+    if record.get("offload_path_sizes") not in ({}, None):
+        raise ModelCIError("CPU long_doc unexpectedly used a filesystem backend")
+
+
+def validate_result_records(
+    path,
+    expected_steps,
+    require_complete_long_doc=True,
+    long_doc_validation="tool",
+    expected_long_doc_prompts=None,
+):
     with Path(path).open(encoding="utf-8") as handle:
         records = json.load(handle)
     if not isinstance(records, list):
@@ -497,6 +555,13 @@ def validate_result_records(path, expected_steps, require_complete_long_doc=True
         matches = by_step.get(step, [])
         if len(matches) != 1:
             problems.append("{} appears {} times".format(step, len(matches)))
+        elif step == "long_doc" and long_doc_validation == "cpu_memory":
+            try:
+                validate_cpu_memory_long_doc(
+                    matches[0], expected_long_doc_prompts
+                )
+            except ModelCIError as exc:
+                problems.append(str(exc))
         elif matches[0].get("result") != "success":
             problems.append("{} result is {!r}".format(step, matches[0].get("result")))
         elif step == "long_doc" and require_complete_long_doc:
@@ -554,7 +619,7 @@ def run_command(command, cwd, timeout, log_handle, environment=None):
     return return_code, time.time() - started
 
 
-def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir, work_dir, opencompass_dir):
+def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir, work_dir, opencompass_dir, scenario):
     config = str(config)
     python = sys.executable
     commands = [
@@ -564,7 +629,15 @@ def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir
     ]
     expected = ["prepare_output_dir", "check_init", "start_model_vllm"]
     if "long_doc" in checks:
-        commands.append(("long-doc", [python, "-m", "lmcache_test.long_doc_qa_tput", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "long_doc", "--timeout", str(manifest["timeouts"]["long_doc_seconds"]), "--json-output"], int(manifest["timeouts"]["long_doc_seconds"]) + 60))
+        command = [python, "-m", "lmcache_test.long_doc_qa_tput", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "long_doc", "--timeout", str(manifest["timeouts"]["long_doc_seconds"]), "--json-output"]
+        option_flags = {
+            "document_length": "--document-length",
+            "num_documents": "--num-documents",
+            "max_inflight_requests": "--max-inflight-requests",
+        }
+        for name, value in sorted(scenario.get("long_doc_options", {}).items()):
+            command.extend([option_flags[name], str(value)])
+        commands.append(("long-doc", command, int(manifest["timeouts"]["long_doc_seconds"]) + 60))
         expected.append("long_doc")
     if "opencompass" in checks:
         if opencompass_dir is None:
@@ -618,12 +691,20 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
     config = prepare_effective_config(tool_root, scenario, case_id)
     commands, expected, config = scenario_commands(
         manifest, tool_root, config, checks, results_dir, logs_dir, work_dir,
-        opencompass_dir
+        opencompass_dir, scenario
     )
     model = manifest["models"][manifest["scenarios"][scenario_id]["model"]]
     scenario_environment = dict(model.get("environment", {}))
     command_environment = os.environ.copy()
     command_environment.update(scenario_environment)
+    tool_python_path = str(tool_root / "lib")
+    inherited_python_path = command_environment.get("PYTHONPATH", "").strip()
+    command_environment["PYTHONPATH"] = (
+        tool_python_path
+        if not inherited_python_path
+        else tool_python_path + os.pathsep + inherited_python_path
+    )
+    command_environment["COMPASS_DATA_CACHE"] = manifest["image_contract"]["dataset_dir"]
     failure = None
     duration = 0.0
     cmmlu_rc = None
@@ -657,7 +738,12 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
                 model_log_printed = True
             if step == "cmmlu":
                 cmmlu_rc = rc
-            if rc != 0 and step not in {"print-model-log"}:
+            tolerated_cpu_result = (
+                step == "long-doc"
+                and rc == 1
+                and scenario.get("long_doc_validation") == "cpu_memory"
+            )
+            if rc != 0 and step not in {"print-model-log"} and not tolerated_cpu_result:
                 failure = "{} exited with {}".format(step, rc)
                 break
 
@@ -710,6 +796,8 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
                 raw_destination,
                 expected,
                 bool(manifest["thresholds"].get("long_doc_require_all_requests", True)),
+                scenario.get("long_doc_validation", "tool"),
+                scenario.get("long_doc_options", {}).get("num_documents", 50),
             )
         except Exception as exc:
             failure = failure or str(exc)
@@ -728,6 +816,8 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         "result_file": raw_destination.name if raw_destination.exists() else None,
         "config_sha256": sha256_file(config_destination),
         "config_fixes": dict(scenario.get("config_fixes", {})),
+        "long_doc_validation": scenario.get("long_doc_validation", "tool"),
+        "long_doc_options": dict(scenario.get("long_doc_options", {})),
         "environment": scenario_environment,
     }
 
@@ -780,8 +870,18 @@ def cmd_run(args):
                 "source": str(source_opencompass),
                 "runtime_copy": str(runtime_opencompass_dir),
             }
+        dataset_root = Path(manifest["image_contract"]["dataset_dir"])
+        if "opencompass" in required_checks:
+            for dataset_name in ("humaneval", "gsm8k"):
+                dataset_path = dataset_root / dataset_name
+                if not dataset_path.is_dir() or not next(dataset_path.rglob("*"), None):
+                    raise ModelCIError(
+                        "the reviewed {} dataset is missing below {}".format(
+                            dataset_name, dataset_path
+                        )
+                    )
         if "cmmlu" in required_checks:
-            cmmlu_root = Path(manifest["image_contract"]["cmmlu_dataset_dir"])
+            cmmlu_root = dataset_root / "cmmlu"
             if not cmmlu_root.is_dir() or not next(cmmlu_root.rglob("*.csv"), None):
                 raise ModelCIError(
                     "the reviewed CMMLU dataset is missing below {}".format(
@@ -899,6 +999,49 @@ disable-cascade-attn = true
         passed = root / "passed.json"
         write_json(passed, [complete_long_doc])
         validate_result_records(passed, ["long_doc"])
+        cpu_long_doc = {
+            "step_name": "long_doc",
+            "result": "failed",
+            "long_doc_qa_tput_result": False,
+            "long_doc_qa_result": {
+                "warmup_round_mean_TTFT_seconds": 12.0,
+                "query_round_mean_TTFT_seconds": 3.0,
+                "warmup_round_prompt_count": 4,
+                "warmup_round_successful_prompt_count": 4,
+                "query_round_prompt_count": 4,
+                "query_round_successful_prompt_count": 4,
+            },
+            "lmcache_log_stats": {
+                "stored_count": 8,
+                "retrieve_count": 4,
+                "need_to_load_count": 4,
+            },
+            "offload_path_sizes": {},
+        }
+        cpu_passed = root / "cpu-passed.json"
+        write_json(cpu_passed, [cpu_long_doc])
+        validate_result_records(
+            cpu_passed,
+            ["long_doc"],
+            long_doc_validation="cpu_memory",
+            expected_long_doc_prompts=4,
+        )
+        cpu_no_hit = dict(cpu_long_doc)
+        cpu_no_hit["lmcache_log_stats"] = dict(cpu_long_doc["lmcache_log_stats"])
+        cpu_no_hit["lmcache_log_stats"]["retrieve_count"] = 0
+        cpu_failed = root / "cpu-failed.json"
+        write_json(cpu_failed, [cpu_no_hit])
+        try:
+            validate_result_records(
+                cpu_failed,
+                ["long_doc"],
+                long_doc_validation="cpu_memory",
+                expected_long_doc_prompts=4,
+            )
+        except ModelCIError:
+            pass
+        else:
+            raise ModelCIError("a CPU long-document result without hits was accepted")
         partial = root / "partial.json"
         partial_long_doc = dict(complete_long_doc)
         partial_long_doc["long_doc_qa_result"] = dict(complete_long_doc["long_doc_qa_result"])

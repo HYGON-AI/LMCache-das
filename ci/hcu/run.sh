@@ -235,8 +235,8 @@ model_mount_arguments() {
     while IFS=$'\t' read -r host_path container_path; do
         if [[ "${container_path}" == /llm/models/* ]]; then
             [[ "${host_path}" == /public/* ]]
-        elif [[ "${container_path}" == "/public/ai_data/datasets/cmmlu" ]]; then
-            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data/cmmlu" ]]
+        elif [[ "${container_path}" == "/public/ai_data/datasets" ]]; then
+            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data" ]]
         else
             return 3
         fi
