@@ -122,6 +122,22 @@ def validate_manifest(manifest):
         raise ModelCIError("the reviewed evaluation dataset host path changed")
     if image_contract.get("dataset_dir") != "/public/ai_data/datasets":
         raise ModelCIError("the reviewed evaluation dataset container path changed")
+    if image_contract.get("opencompass_dataset_dir") != "/public/ai_data/datasets/data":
+        raise ModelCIError("the reviewed OpenCompass dataset compatibility path changed")
+    timeouts = manifest.get("timeouts")
+    required_timeouts = {
+        "start_model_seconds",
+        "start_api_seconds",
+        "long_doc_seconds",
+        "opencompass_seconds",
+        "cmmlu_seconds",
+        "cleanup_seconds",
+    }
+    if not isinstance(timeouts, dict) or set(timeouts) != required_timeouts:
+        raise ModelCIError("the model timeout contract changed")
+    for name, value in timeouts.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ModelCIError("model timeout {} must be a positive integer".format(name))
     for model_id, model in models.items():
         if not TOKEN.match(model_id) or not isinstance(model, dict):
             raise ModelCIError("invalid model declaration: {}".format(model_id))
@@ -253,6 +269,12 @@ def cmd_mounts(args):
             "{}\t{}".format(
                 contract["dataset_host_path"],
                 contract["dataset_dir"],
+            )
+        )
+        print(
+            "{}\t{}".format(
+                contract["dataset_host_path"],
+                contract["opencompass_dataset_dir"],
             )
         )
     return 0
@@ -625,7 +647,23 @@ def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir
     commands = [
         ("prepare-output", [python, "-m", "lmcache_test.prepare_output_dir", "--logs_dir", str(logs_dir), "--results_dir", str(results_dir), "--step_name", "prepare_output_dir"], 300),
         ("check-init", [python, "-m", "lmcache_test.check_init", "--vllm_conf", config, "--logs_dir", str(logs_dir), "--results_dir", str(results_dir), "--step_name", "check_init"], 600),
-        ("start-model", [python, "-m", "lmcache_test.start_model_vllm", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "start_model_vllm"], int(manifest["timeouts"]["start_model_seconds"])),
+        (
+            "start-model",
+            [
+                python,
+                "-m",
+                "lmcache_test.start_model_vllm",
+                "--vllm_conf",
+                config,
+                "--results_dir",
+                str(results_dir),
+                "--step_name",
+                "start_model_vllm",
+                "--api_timeout",
+                str(manifest["timeouts"]["start_api_seconds"]),
+            ],
+            int(manifest["timeouts"]["start_model_seconds"]),
+        ),
     ]
     expected = ["prepare_output_dir", "check_init", "start_model_vllm"]
     if "long_doc" in checks:
@@ -872,8 +910,11 @@ def cmd_run(args):
             }
         dataset_root = Path(manifest["image_contract"]["dataset_dir"])
         if "opencompass" in required_checks:
+            opencompass_dataset_root = Path(
+                manifest["image_contract"]["opencompass_dataset_dir"]
+            )
             for dataset_name in ("humaneval", "gsm8k"):
-                dataset_path = dataset_root / dataset_name
+                dataset_path = opencompass_dataset_root / dataset_name
                 if not dataset_path.is_dir() or not next(dataset_path.rglob("*"), None):
                     raise ModelCIError(
                         "the reviewed {} dataset is missing below {}".format(
@@ -977,6 +1018,28 @@ disable-cascade-attn = true
             raise ModelCIError("model command output was not archived")
         if "model-stream-marker" not in action_log.getvalue():
             raise ModelCIError("model command output was not streamed")
+        timeout_manifest = {
+            "timeouts": {
+                "start_model_seconds": 3600,
+                "start_api_seconds": 300,
+            }
+        }
+        startup_commands, _, _ = scenario_commands(
+            timeout_manifest,
+            root,
+            root / "model.conf",
+            [],
+            root / "results",
+            root / "logs",
+            root / "work",
+            None,
+            {},
+        )
+        startup_command = next(
+            command for name, command, _ in startup_commands if name == "start-model"
+        )
+        if startup_command[-2:] != ["--api_timeout", "300"]:
+            raise ModelCIError("the reviewed model startup request timeout was not applied")
         failed = root / "failed.json"
         write_json(failed, [{"step_name": "long_doc", "result": "failed"}])
         try:

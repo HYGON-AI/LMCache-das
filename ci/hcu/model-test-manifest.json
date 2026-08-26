@@ -135,6 +135,7 @@
   },
   "timeouts": {
     "start_model_seconds": 3600,
+    "start_api_seconds": 300,
     "long_doc_seconds": 1800,
     "opencompass_seconds": 7200,
     "cmmlu_seconds": 7200,
@@ -148,6 +149,7 @@
   "image_contract": {
     "opencompass_dir": "/lmcache_workspace/opencompass",
     "dataset_host_path": "/public/opendas/DL_DATA/opencompass_data",
-    "dataset_dir": "/public/ai_data/datasets"
+    "dataset_dir": "/public/ai_data/datasets",
+    "opencompass_dataset_dir": "/public/ai_data/datasets/data"
   }
 }
