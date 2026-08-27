@@ -21,7 +21,8 @@
       "ready": true,
       "host_path": "/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B",
       "container_path": "/llm/models/Qwen3-8B",
-      "gpu_count": 2
+      "gpu_count": 2,
+      "start_model_attempts": 2
     },
     "deepseek-r1-w4a8-v2": {
       "ready": true,
@@ -31,6 +32,7 @@
       "environment": {
         "VLLM_USE_CAT_MLA": "1"
       },
+      "start_model_attempts": 2,
       "required_vllm_options": {
         "kv-cache-dtype": "fp8_e4m3"
       }
@@ -47,7 +49,18 @@
     "qwen3-8b-cpu": {
       "model": "qwen3-8b",
       "backend": "cpu",
-      "config": "vllm_conf/Qwen3-8B/04_cpu.conf"
+      "config": "vllm_conf/Qwen3-8B/04_cpu.conf",
+      "long_doc_validation": "cpu_memory",
+      "long_doc_options": {
+        "num_documents": 12,
+        "max_inflight_requests": 4
+      },
+      "config_fixes": {
+        "drop_duplicate_options": ["vllm.disable-cascade-attn"],
+        "set_options": {
+          "vllm.gpu-memory-utilization": "0.20"
+        }
+      }
     },
     "qwen3-8b-localdisk": {
       "model": "qwen3-8b",
@@ -62,17 +75,39 @@
     "deepseek-r1-w4a8-v2-cpu": {
       "model": "deepseek-r1-w4a8-v2",
       "backend": "cpu",
-      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/04_cpu.conf"
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/04_cpu.conf",
+      "long_doc_validation": "cpu_memory",
+      "long_doc_options": {
+        "num_documents": 4,
+        "output_len": 16,
+        "max_inflight_requests": 4
+      }
     },
     "deepseek-r1-w4a8-v2-localdisk": {
       "model": "deepseek-r1-w4a8-v2",
       "backend": "localdisk",
-      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf"
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf",
+      "long_doc_options": {
+        "num_documents": 50,
+        "output_len": 16,
+        "max_inflight_requests": 4
+      },
+      "opencompass_options": {
+        "batch_size": 32
+      }
     },
     "deepseek-r1-w4a8-v2-posix": {
       "model": "deepseek-r1-w4a8-v2",
       "backend": "posix",
-      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf"
+      "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf",
+      "long_doc_options": {
+        "num_documents": 50,
+        "output_len": 16,
+        "max_inflight_requests": 4
+      },
+      "opencompass_options": {
+        "batch_size": 32
+      }
     },
     "glm-5-localdisk": {
       "model": "glm-5",
@@ -97,6 +132,18 @@
         {"scenario": "qwen3-8b-posix", "checks": ["long_doc"]}
       ]
     },
+    "pr-qwen-localdisk": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-localdisk", "checks": ["long_doc"]}
+      ]
+    },
+    "pr-qwen-posix": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-posix", "checks": ["long_doc"]}
+      ]
+    },
     "qwen-smoke": {
       "visible_devices": "0,1",
       "runs": [
@@ -115,6 +162,42 @@
         {"scenario": "deepseek-r1-w4a8-v2-posix", "checks": ["long_doc", "opencompass", "cmmlu"]}
       ]
     },
+    "weekly-qwen-cpu": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-cpu", "checks": ["long_doc", "cmmlu"]}
+      ]
+    },
+    "weekly-qwen-localdisk": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-localdisk", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "weekly-qwen-posix": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-posix", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "weekly-deepseek-cpu": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "runs": [
+        {"scenario": "deepseek-r1-w4a8-v2-cpu", "checks": ["long_doc", "cmmlu"]}
+      ]
+    },
+    "weekly-deepseek-localdisk": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "runs": [
+        {"scenario": "deepseek-r1-w4a8-v2-localdisk", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "weekly-deepseek-posix": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "runs": [
+        {"scenario": "deepseek-r1-w4a8-v2-posix", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
     "full": {
       "visible_devices": "0,1,2,3,4,5,6,7",
       "inherits": "weekly-bw1100"
@@ -122,6 +205,7 @@
   },
   "timeouts": {
     "start_model_seconds": 3600,
+    "start_api_seconds": 300,
     "long_doc_seconds": 1800,
     "opencompass_seconds": 7200,
     "cmmlu_seconds": 7200,
@@ -134,7 +218,9 @@
   },
   "image_contract": {
     "opencompass_dir": "/lmcache_workspace/opencompass",
-    "cmmlu_dataset_host_path": "/public/opendas/DL_DATA/opencompass_data/cmmlu",
-    "cmmlu_dataset_dir": "/public/ai_data/datasets/cmmlu"
+    "dataset_host_path": "/public/opendas/DL_DATA/opencompass_data",
+    "cmmlu_host_path": "/public/opendas/DL_DATA/opencompass_data/cmmlu",
+    "dataset_dir": "/public/ai_data/datasets",
+    "opencompass_dataset_dir": "/public/ai_data/datasets/data"
   }
 }

@@ -7,7 +7,7 @@ scenarios declared in `model-test-manifest.json`.
 
 ## Execution model
 
-GitHub Actions exposes one job as seven readable steps:
+Each execution unit still exposes seven readable steps:
 
 ```text
 Checkout trusted CI controller
@@ -19,11 +19,25 @@ Run HCU test suite
 Cleanup, validate and publish
 ```
 
+The workflows split those units into visible jobs. `framework-and-pytest`
+builds exactly one current-SHA wheel and runs the complete repository pytest
+inventory. Every selected model scenario then receives its own job, installs
+the already verified framework wheel from `/ci_public`, applies and verifies
+the same source patches in a fresh environment, and runs only that scenario.
+The final summary job verifies all child manifests, checksums and completion
+markers before creating the run-level `READY` marker. No GitHub Artifact is
+used and model jobs never rebuild the package.
+
+PR therefore has four visible jobs: framework, Qwen LocalDisk, Qwen POSIX and
+the required `hcu-tests` summary. Weekly has eight visible jobs: framework,
+six Qwen/DeepSeek scenario jobs and `weekly-summary`. The single nmz4 runner
+executes model jobs serially, but each has an independent timeout and an
+independent client/server log stream.
+
 The trusted controller comes from the protected target branch. The selected PR
 merge or manual revision is mounted read-only into a restricted container. A
-disposable source copy is used to build exactly one wheel, and that same wheel
-and virtual environment are reused for source-patch checks, pytest and model
-tests. The original checkout is never built in place.
+disposable source copy is used for wheel construction; the original checkout
+is never built in place.
 
 The fixed test-tool tar archive is read from the nmz4 `/ci_public` asset tree.
 The trusted host verifies its SHA256, rejects unsafe archive entries, verifies
@@ -48,16 +62,17 @@ self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4
 
 Profiles:
 
-- `pr`: repository pytest plus Qwen3-8B LocalDisk and POSIX long-document
-  checks; two visible devices, 60-minute workflow limit.
+- `pr`: one framework job plus independent Qwen3-8B LocalDisk and POSIX
+  long-document jobs; each job has its own 60-minute limit.
 - `framework`: repository pytest only; one visible device.
 - `qwen-smoke`: the two PR model scenarios; two visible devices.
-- `weekly-bw1100`: all enabled Qwen and DeepSeek scenarios; eight
-  visible devices.
+- `weekly-bw1100`: all enabled Qwen and DeepSeek scenarios, one scenario per
+  job; Qwen jobs expose two devices and DeepSeek jobs expose eight.
 - `full`: alias of `weekly-bw1100` for manual dispatch.
 
-The runner lock is held for the complete job, including two-device profiles, so
-another repository job cannot use the remaining cards concurrently.
+The runner lock is held for each complete execution unit. The nmz4 runner has a
+single worker and model jobs use `max-parallel: 1`, so split jobs cannot overlap
+or reuse cards while another scenario is active.
 
 ## Configuration
 
@@ -97,9 +112,36 @@ lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar
 
 Its SHA256 and embedded Git commit are pinned in `model-test-manifest.json`.
 The reviewed image supplies OpenCompass at `/lmcache_workspace/opencompass`.
-The nmz4 host CMMLU dataset at
-`/public/opendas/DL_DATA/opencompass_data/cmmlu` is mounted read-only at the
-fixed path expected by the test tool, `/public/ai_data/datasets/cmmlu`.
+The source asset remains read-only. Weekly copies the reviewed OpenCompass tree
+to `/sandbox/opencompass-ci` before execution because OpenCompass writes task
+parameter files below its own `tmp/` directory.
+The supplied CMMLU launcher expects a private Miniconda installer and packed
+environment that are not part of the fixed offline image. After verifying the
+test-tool commit, CI creates a minimal `conda run` adapter only in the writable
+test-tool copy. It accepts the exact version, Python-import and OpenCompass
+commands used by that launcher and forwards them to the current CI interpreter
+and `/sandbox/opencompass-ci`; it neither downloads packages nor changes the
+read-only test-tool asset.
+The nmz4 evaluation datasets at
+`/public/opendas/DL_DATA/opencompass_data` are mounted read-only at the
+OpenCompass compatibility path `/public/ai_data/datasets/data`; its CMMLU
+subdirectory is independently mounted read-only at
+`/public/ai_data/datasets/cmmlu`. These sibling binds avoid unsupported nested
+read-only Docker mounts, do not copy data, and do not allow network access.
+They match OpenCompass's fixed `COMPASS_DATA_CACHE/data/...` lookup while the
+supplied CMMLU script keeps its fixed `/public/ai_data/datasets/cmmlu` path.
+
+The supplied long-document wrapper assumes every cache backend has a filesystem
+offload path. Pure CPU-memory scenarios do not, so the wrapper reports failure
+even when its requests and cache operations are valid. For those two reviewed
+CPU scenarios only, CI uses four 32K documents (bounded by the configured 32 GiB
+CPU cache) and independently requires complete warmup/query requests, a lower
+query TTFT, positive stored/retrieve/load counters, and no filesystem backend.
+The original tool JSON and exit code remain archived.
+
+The model start probe uses a reviewed 300-second request deadline. A cold vLLM
+start can compile its first request after the HTTP service is already ready;
+the complete start phase remains independently bounded by its one-hour timeout.
 
 The fixed upstream source is read from:
 
@@ -108,9 +150,16 @@ The fixed upstream source is read from:
 ```
 
 Each run creates only one cache subtree below the configured nmz4 root. The
-controller probes LocalDisk, SSD and POSIX subdirectories with direct I/O,
-mounts them as `/local_disk`, `/ssd` and `/mnt/parastor_storage`, and removes
-only the current run subtree after the test container is confirmed absent.
+controller probes CPU, LocalDisk, SSD and POSIX subdirectories with direct I/O,
+mounts them as `/mnt/fs1`, `/local_disk`, `/ssd` and
+`/mnt/parastor_storage`, and removes only the current run subtree after the
+test container is confirmed absent. The CPU mount preserves the fixed test
+tool's `/mnt/fs1/posix` behavior without making the container root writable.
+
+The Qwen CPU config in the fixed test-tool archive contains one duplicate
+`disable-cascade-attn` entry. The manifest authorizes removal of only that
+duplicate when CI creates the recorded effective config; the reviewed archive
+itself is never modified.
 
 ## Registered model tests
 
@@ -136,10 +185,17 @@ JUnit testcase.
 
 All DeepSeek scenarios export `VLLM_USE_CAT_MLA=1`. Their reviewed config must
 still contain `kv-cache-dtype = fp8_e4m3`; the manifest gate rejects a config
-that drops or changes it. Long-document runs pass only when both warmup and
-query report every requested prompt as successful (for the current tool,
-50/50 in each round). A tool-level `result=success` cannot hide partial
-responses such as 20/50 or 19/50.
+that drops or changes it. On BW1100, the first Qwen or DeepSeek request can spend
+the initial five-minute probe compiling and then terminate with the exact paired
+`sample_tokens` RPC timeout and `EngineDeadError` signature. Both models may
+perform one controlled clean restart for that signature; OOM and all other
+startup failures remain non-retryable. The failed first-attempt JSON and server
+log remain archived. DeepSeek uses 16 generated tokens per long-document request
+because a one-token MTP response can finish before producing a measurable first
+token. LocalDisk and POSIX use four in-flight requests; DeepSeek OpenCompass uses
+the reviewed batch size 32, while still requiring all 50 warmup and 50 query
+requests to succeed. A
+tool-level `result=success` cannot hide partial responses such as 20/50 or 19/50.
 
 ## Reports
 
@@ -147,11 +203,19 @@ Results are atomically published under:
 
 ```text
 /ci_public/lmcache-das/<pr|manual|weekly>/<run-id>/<attempt>/<sha>/
+├── framework/
+├── <model-scenario>/
+├── aggregate-manifest.json
+├── summary.md
+├── SHA256SUMS
+└── READY
 ```
 
-The archive includes the wheel, pytest and model JUnit, raw model JSON,
-effective configs, logs, environment, test and model inventories, patch report,
-asset manifest, summary, checksums and `READY`.
+Each child directory contains its own JUnit, logs, environment, inventories,
+patch report, manifest, checksums and completion marker. The framework child
+owns the single wheel and pytest results; model children own their raw JSON,
+effective config and client/server logs. Top-level `READY` is written only when
+every expected child reports success and passes checksum validation.
 
 ## Static verification
 
