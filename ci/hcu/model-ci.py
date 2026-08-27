@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -527,6 +528,78 @@ def copy_opencompass_tree(source, destination):
     if not (destination / "run.py").is_file() or not (destination / "opencompass").is_dir():
         raise ModelCIError("the writable OpenCompass copy is incomplete")
     return destination
+
+
+def prepare_opencompass_conda_shim(tool_root, opencompass_dir):
+    """Provide the fixed test tool with an offline ``conda run`` adapter.
+
+    The reviewed CMMLU script invokes OpenCompass through a private Conda
+    environment.  The CI image already contains the reviewed OpenCompass tree
+    and its dependencies, so downloading and unpacking another environment is
+    both unnecessary and incompatible with the offline test container.  This
+    shim implements only the three commands used by the fixed test tool and
+    forwards them to the current CI interpreter and OpenCompass copy.
+    """
+    tool_root = Path(tool_root).resolve()
+    opencompass_dir = Path(opencompass_dir).resolve()
+    if not (opencompass_dir / "run.py").is_file():
+        raise ModelCIError("the CMMLU OpenCompass runtime is incomplete")
+    shim = tool_root / ".runtime" / "miniconda3" / "bin" / "conda"
+    shim.parent.mkdir(parents=True, exist_ok=True)
+    interpreter = shlex.quote(str(Path(sys.executable).resolve()))
+    source_root = shlex.quote(str(opencompass_dir))
+    run_py = shlex.quote(str(opencompass_dir / "run.py"))
+    shim.write_text(
+        """#!/bin/sh
+set -eu
+if [ \"$#\" -eq 1 ] && [ \"$1\" = \"--version\" ]; then
+    echo \"conda 0.0-lmcache-ci\"
+    exit 0
+fi
+if [ \"$#\" -ge 3 ] && [ \"$1\" = \"run\" ] && [ \"$2\" = \"-n\" ]; then
+    shift 3
+fi
+export PYTHONPATH={source_root}${{PYTHONPATH:+:$PYTHONPATH}}
+case \"${{1-}}\" in
+    python|python3)
+        shift
+        exec {interpreter} \"$@\"
+        ;;
+    opencompass)
+        shift
+        exec {interpreter} {run_py} \"$@\"
+        ;;
+    *)
+        exec \"$@\"
+        ;;
+esac
+""".format(
+            source_root=source_root,
+            interpreter=interpreter,
+            run_py=run_py,
+        ),
+        encoding="utf-8",
+    )
+    shim.chmod(0o700)
+    probe = subprocess.run(
+        [str(shim), "run", "-n", "opencompassenv", "python", "-c",
+         "import opencompass; print(opencompass.__file__)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    if probe.returncode != 0 or not probe.stdout.strip():
+        raise ModelCIError(
+            "the offline CMMLU OpenCompass adapter failed: {}".format(
+                probe.stderr.strip()
+            )
+        )
+    return {
+        "kind": "offline-conda-run-shim",
+        "path": str(shim),
+        "python": str(Path(sys.executable).resolve()),
+        "opencompass": str(opencompass_dir),
+    }
 
 
 def verify_tool(manifest, tool_root, profile):
@@ -1130,7 +1203,7 @@ def cmd_run(args):
         required_checks = {
             check for run in runs for check in run["checks"]
         }
-        if "opencompass" in required_checks:
+        if required_checks & {"opencompass", "cmmlu"}:
             opencompass_root = Path(manifest["image_contract"]["opencompass_dir"])
             candidates = (opencompass_root, opencompass_root / "opencompass")
             source_opencompass = next((
@@ -1151,6 +1224,12 @@ def cmd_run(args):
                 "source": str(source_opencompass),
                 "runtime_copy": str(runtime_opencompass_dir),
             }
+            if "cmmlu" in required_checks:
+                asset_manifest["opencompass"]["cmmlu_adapter"] = (
+                    prepare_opencompass_conda_shim(
+                        tool_root, runtime_opencompass_dir
+                    )
+                )
         dataset_root = Path(manifest["image_contract"]["dataset_dir"])
         if "opencompass" in required_checks:
             opencompass_dataset_root = Path(
@@ -1252,6 +1331,29 @@ disable-cascade-attn = true
         )
         if not (opencompass_copy / "tmp").is_dir():
             raise ModelCIError("the writable OpenCompass tree was not prepared")
+        tool_root = root / "tool"
+        tool_root.mkdir()
+        adapter = prepare_opencompass_conda_shim(tool_root, opencompass_copy)
+        shim = Path(adapter["path"])
+        version = subprocess.check_output(
+            [str(shim), "--version"], universal_newlines=True
+        ).strip()
+        if version != "conda 0.0-lmcache-ci":
+            raise ModelCIError("the offline CMMLU adapter version probe failed")
+        import_probe = subprocess.check_output(
+            [
+                str(shim),
+                "run",
+                "-n",
+                "opencompassenv",
+                "python",
+                "-c",
+                "import opencompass; print(opencompass.__file__)",
+            ],
+            universal_newlines=True,
+        ).strip()
+        if not import_probe.startswith(str(opencompass_copy)):
+            raise ModelCIError("the offline CMMLU adapter used the wrong tree")
         command_log = io.StringIO()
         action_log = io.StringIO()
         with contextlib.redirect_stdout(action_log):

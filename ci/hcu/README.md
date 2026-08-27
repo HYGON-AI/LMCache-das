@@ -100,6 +100,13 @@ The reviewed image supplies OpenCompass at `/lmcache_workspace/opencompass`.
 The source asset remains read-only. Weekly copies the reviewed OpenCompass tree
 to `/sandbox/opencompass-ci` before execution because OpenCompass writes task
 parameter files below its own `tmp/` directory.
+The supplied CMMLU launcher expects a private Miniconda installer and packed
+environment that are not part of the fixed offline image. After verifying the
+test-tool commit, CI creates a minimal `conda run` adapter only in the writable
+test-tool copy. It accepts the exact version, Python-import and OpenCompass
+commands used by that launcher and forwards them to the current CI interpreter
+and `/sandbox/opencompass-ci`; it neither downloads packages nor changes the
+read-only test-tool asset.
 The nmz4 evaluation datasets at
 `/public/opendas/DL_DATA/opencompass_data` are mounted read-only at the
 OpenCompass compatibility path `/public/ai_data/datasets/data`; its CMMLU
@@ -170,8 +177,9 @@ perform one controlled clean restart for that signature; OOM and all other
 startup failures remain non-retryable. The failed first-attempt JSON and server
 log remain archived. DeepSeek uses 16 generated tokens per long-document request
 because a one-token MTP response can finish before producing a measurable first
-token. LocalDisk and POSIX use four in-flight requests and OpenCompass batch size
-four, while still requiring all 50 warmup and 50 query requests to succeed. A
+token. LocalDisk and POSIX use four in-flight requests; DeepSeek OpenCompass uses
+the reviewed batch size 32, while still requiring all 50 warmup and 50 query
+requests to succeed. A
 tool-level `result=success` cannot hide partial responses such as 20/50 or 19/50.
 
 ## Reports
