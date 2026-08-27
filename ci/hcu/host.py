@@ -89,6 +89,8 @@ def state_metadata(args):
         "base_image": args.base_image,
         "base_image_id": args.base_image_id,
         "run_key": args.run_key,
+        "job_key": args.job_key,
+        "job_role": args.job_role,
         "repeat": args.repeat,
         "checkout_status_sha256": args.checkout_status_sha256,
     }
@@ -594,19 +596,31 @@ def resolved_model_profile(manifest, profile):
     return profiles[inherited] if inherited else value
 
 
-def validate_success(spool, baseline_path, repeat, model_manifest_path, model_profile, runner_kind):
+def validate_success(
+    spool,
+    baseline_path,
+    repeat,
+    model_manifest_path,
+    model_profile,
+    runner_kind,
+    job_role,
+):
     required = [
         "environment.json",
         "upstream-source.json",
         "wheel-report.json",
         "installed-package.json",
         "patch-report.json",
-        "test-inventory.json",
-        "test-summary.json",
         "model-inventory.json",
         "model-summary.json",
         "asset-manifest.json",
     ]
+    if job_role == "framework":
+        required.extend(["test-inventory.json", "test-summary.json"])
+    elif job_role == "model":
+        required.append("model-tool.json")
+    else:
+        raise HostError("unknown job role {}".format(job_role))
     problems = []
     for relative in required:
         if not (spool / relative).is_file():
@@ -614,67 +628,70 @@ def validate_success(spool, baseline_path, repeat, model_manifest_path, model_pr
     if problems:
         return problems, None
 
-    baseline = read_json(baseline_path)
-    inventory = read_json(spool / "test-inventory.json")
-    nodeids = inventory.get("nodeids")
-    if not isinstance(nodeids, list) or not all(isinstance(item, str) for item in nodeids):
-        return ["test inventory does not contain a string nodeid list"], None
-    if len(nodeids) != len(set(nodeids)):
-        problems.append("test inventory contains duplicate nodeids")
-    if int(inventory.get("count", -1)) != len(nodeids):
-        problems.append("test inventory count does not match nodeids")
-    minimum = int(baseline["minimum_collected"])
-    if len(nodeids) < minimum:
-        problems.append("collected {} tests; trusted minimum is {}".format(len(nodeids), minimum))
-    collected_files = set(inventory_file(item) for item in nodeids)
-    missing_files = sorted(set(baseline["required_test_files"]) - collected_files)
-    if missing_files:
-        problems.append("required test files were not collected: {}".format(", ".join(missing_files)))
-    collected_definitions = set(inventory_definition(item) for item in nodeids)
-    for file_path, definitions in baseline["required_test_definitions"].items():
-        for definition in definitions:
-            if (file_path, definition) not in collected_definitions:
+    expected = 0
+    repeat_stats = []
+    if job_role == "framework":
+        baseline = read_json(baseline_path)
+        inventory = read_json(spool / "test-inventory.json")
+        nodeids = inventory.get("nodeids")
+        if not isinstance(nodeids, list) or not all(isinstance(item, str) for item in nodeids):
+            return ["test inventory does not contain a string nodeid list"], None
+        if len(nodeids) != len(set(nodeids)):
+            problems.append("test inventory contains duplicate nodeids")
+        if int(inventory.get("count", -1)) != len(nodeids):
+            problems.append("test inventory count does not match nodeids")
+        minimum = int(baseline["minimum_collected"])
+        if len(nodeids) < minimum:
+            problems.append("collected {} tests; trusted minimum is {}".format(len(nodeids), minimum))
+        collected_files = set(inventory_file(item) for item in nodeids)
+        missing_files = sorted(set(baseline["required_test_files"]) - collected_files)
+        if missing_files:
+            problems.append("required test files were not collected: {}".format(", ".join(missing_files)))
+        collected_definitions = set(inventory_definition(item) for item in nodeids)
+        for file_path, definitions in baseline["required_test_definitions"].items():
+            for definition in definitions:
+                if (file_path, definition) not in collected_definitions:
+                    problems.append(
+                        "required test definition was not collected: {}::{}".format(
+                            file_path, definition
+                        )
+                    )
+
+        expected = len(nodeids)
+        for index in range(1, repeat + 1):
+            path = spool / "reports" / "junit-repeat-{}.xml".format(index)
+            if not path.is_file():
+                problems.append("missing {}".format(path.relative_to(spool)))
+                continue
+            try:
+                stats = junit_stats(path)
+            except HostError as exc:
+                problems.append(str(exc))
+                continue
+            repeat_stats.append(stats)
+            if stats["tests"] != expected:
                 problems.append(
-                    "required test definition was not collected: {}::{}".format(
-                        file_path, definition
+                    "repeat {} has {} JUnit cases; expected {}".format(index, stats["tests"], expected)
+                )
+            if stats["failures"] or stats["errors"] or stats["skipped"]:
+                problems.append(
+                    "repeat {} failures={} errors={} skipped={}".format(
+                        index, stats["failures"], stats["errors"], stats["skipped"]
                     )
                 )
-
-    expected = len(nodeids)
-    repeat_stats = []
-    for index in range(1, repeat + 1):
-        path = spool / "reports" / "junit-repeat-{}.xml".format(index)
-        if not path.is_file():
-            problems.append("missing {}".format(path.relative_to(spool)))
-            continue
-        try:
-            stats = junit_stats(path)
-        except HostError as exc:
-            problems.append(str(exc))
-            continue
-        repeat_stats.append(stats)
-        if stats["tests"] != expected:
-            problems.append(
-                "repeat {} has {} JUnit cases; expected {}".format(index, stats["tests"], expected)
-            )
-        if stats["failures"] or stats["errors"] or stats["skipped"]:
-            problems.append(
-                "repeat {} failures={} errors={} skipped={}".format(
-                    index, stats["failures"], stats["errors"], stats["skipped"]
-                )
-            )
     patch_report = read_json(spool / "patch-report.json")
     if patch_report.get("status") != "passed":
         problems.append("source-patch gate did not pass")
-    test_summary = read_json(spool / "test-summary.json")
-    if test_summary.get("status") != "passed":
-        problems.append("container aggregate did not pass")
-    if int(test_summary.get("expected_per_repeat", -1)) != expected:
-        problems.append("container aggregate expected count differs from inventory")
-    if int(test_summary.get("repeat_count", -1)) != repeat:
-        problems.append("container aggregate repeat count differs from requested repeat")
-    if int(test_summary.get("expected_total", -1)) != expected * repeat:
-        problems.append("container aggregate total count differs from trusted expectation")
+    if job_role == "framework":
+        test_summary = read_json(spool / "test-summary.json")
+        if test_summary.get("status") != "passed":
+            problems.append("container aggregate did not pass")
+        if int(test_summary.get("expected_per_repeat", -1)) != expected:
+            problems.append("container aggregate expected count differs from inventory")
+        if int(test_summary.get("repeat_count", -1)) != repeat:
+            problems.append("container aggregate repeat count differs from requested repeat")
+        if int(test_summary.get("expected_total", -1)) != expected * repeat:
+            problems.append("container aggregate total count differs from trusted expectation")
     model_manifest = read_json(model_manifest_path)
     if model_manifest.get("runner") != runner_kind:
         problems.append("model manifest runner differs from the workflow runner")
@@ -816,7 +833,7 @@ def mark_publication_failed(location, message):
         )
 
 
-def publish(spool, shared_root, profile, run_id, attempt, sha, run_key, cleanup_root):
+def publish(spool, shared_root, profile, run_id, attempt, sha, job_key, run_key, cleanup_root):
     shared_root = Path(shared_root).resolve()
     if str(shared_root) != "/ci_public/lmcache-das" and os.environ.get("HCU_CI_HOST_SELFTEST") != "1":
         raise HostError("Publication root must be exactly /ci_public/lmcache-das")
@@ -825,11 +842,12 @@ def publish(spool, shared_root, profile, run_id, attempt, sha, run_key, cleanup_
         (run_id, "run id"),
         (attempt, "attempt"),
         (sha, "SHA"),
+        (job_key, "job key"),
         (run_key, "run key"),
     ):
         ensure_token(value, label)
-    parent = shared_root / profile / run_id / attempt
-    final = parent / sha
+    parent = shared_root / profile / run_id / attempt / sha
+    final = parent / job_key
     staging = parent / (".staging-" + run_key)
     if not is_within(final, shared_root) or not is_within(staging, shared_root):
         raise HostError("Publication path escaped the shared root")
@@ -906,6 +924,7 @@ def cmd_finalize(args):
                 args.model_manifest,
                 args.model_profile,
                 args.runner_kind,
+                args.job_role,
             )
         except Exception as exc:
             problems = ["host result validation failed: {}".format(exc)]
@@ -950,6 +969,8 @@ def cmd_finalize(args):
         "repository": args.repository,
         "profile": args.profile,
         "model_profile": args.model_profile,
+        "job_role": args.job_role,
+        "job_key": args.job_key,
         "runner_kind": args.runner_kind,
         "run_id": args.run_id,
         "attempt": args.attempt,
@@ -971,6 +992,7 @@ def cmd_finalize(args):
             args.run_id,
             args.attempt,
             args.sha,
+            args.job_key,
             args.run_key,
             args.cleanup_root,
         )
@@ -1054,6 +1076,8 @@ def parser():
         command.add_argument("--base-image", required=True)
         command.add_argument("--base-image-id", required=True)
         command.add_argument("--run-key", required=True)
+        command.add_argument("--job-key", required=True)
+        command.add_argument("--job-role", choices=("framework", "model"), required=True)
         command.add_argument("--repeat", type=int, required=True)
         command.add_argument("--checkout-status-sha256", required=True)
 
@@ -1136,6 +1160,8 @@ def parser():
     final.add_argument("--model-manifest", required=True)
     final.add_argument("--model-profile", required=True)
     final.add_argument("--runner-kind", required=True)
+    final.add_argument("--job-role", choices=("framework", "model"), required=True)
+    final.add_argument("--job-key", required=True)
     final.add_argument("--repeat", type=int, required=True)
     final.add_argument("--primary-rc", type=int, required=True)
     final.add_argument("--cleanup-rc", type=int, required=True)
