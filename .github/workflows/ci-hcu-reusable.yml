@@ -1,0 +1,166 @@
+name: LMCache HCU reusable job
+
+on:
+  workflow_call:
+    inputs:
+      controller_ref:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      source_sha_hint:
+        required: false
+        default: unknown
+        type: string
+      logical_profile:
+        required: true
+        type: string
+      model_profile:
+        required: true
+        type: string
+      job_role:
+        required: true
+        type: string
+      job_key:
+        required: true
+        type: string
+      visible_devices:
+        required: true
+        type: string
+      repeat:
+        required: true
+        type: string
+      timeout_minutes:
+        required: true
+        type: number
+      phase_timeout_seconds:
+        required: true
+        type: string
+      container_memory:
+        required: true
+        type: string
+      is_pr:
+        required: false
+        default: false
+        type: boolean
+      expected_base_sha:
+        required: false
+        default: ""
+        type: string
+      expected_head_sha:
+        required: false
+        default: ""
+        type: string
+    outputs:
+      source_sha:
+        value: ${{ jobs.hcu.outputs.source_sha }}
+
+permissions:
+  contents: read
+
+jobs:
+  hcu:
+    name: ${{ inputs.job_key }}
+    if: >-
+      ${{
+        always() &&
+        vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
+        vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
+      }}
+    runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      source_sha: ${{ steps.revision.outputs.source_sha }}
+    env:
+      HCU_CI_PROFILE: ${{ inputs.logical_profile }}
+      HCU_CI_MODEL_PROFILE: ${{ inputs.model_profile }}
+      HCU_CI_JOB_ROLE: ${{ inputs.job_role }}
+      HCU_CI_JOB_KEY: ${{ inputs.job_key }}
+      HCU_CI_RUNNER_KIND: nmz4
+      HCU_CI_REPEAT: ${{ inputs.repeat }}
+      HCU_CI_BASE_IMAGE: ${{ vars.LMCACHE_HCU_BASE_IMAGE }}
+      HCU_CI_BASE_IMAGE_ID: ${{ vars.LMCACHE_HCU_BASE_IMAGE_ID }}
+      HCU_CI_ISOLATED_RUNNER: ${{ vars.LMCACHE_HCU_RUNNER_ISOLATED }}
+      HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
+      HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
+      HCU_CI_VISIBLE_DEVICES: ${{ inputs.visible_devices }}
+      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock
+      HCU_CI_CACHE_ROOT: ${{ vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 }}
+      HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
+      HCU_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
+      HCU_CI_EXPECTED_BASE_SHA: ${{ inputs.expected_base_sha }}
+      HCU_CI_EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      HCU_CI_SOURCE_SHA_HINT: ${{ inputs.source_sha_hint }}
+      HCU_CI_RUN_ID: ${{ github.run_id }}
+      HCU_CI_ATTEMPT: ${{ github.run_attempt }}
+      HCU_CI_CONTAINER_MEMORY: ${{ inputs.container_memory }}
+      HCU_CI_CONTAINER_CPUS: "64"
+      HCU_CI_PHASE_TIMEOUT_SECONDS: ${{ inputs.phase_timeout_seconds }}
+    steps:
+      - name: Checkout trusted CI controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.controller_ref }}
+          path: controller
+          persist-credentials: false
+
+      - name: Checkout tested revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 2
+          allow-unsafe-pr-checkout: ${{ inputs.is_pr }}
+
+      - name: Record tested revision
+        id: revision
+        shell: bash
+        run: |
+          source_sha="$(git -C "${GITHUB_WORKSPACE}/source" rev-parse HEAD)"
+          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+          printf 'source_sha=%s\n' "${source_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'HCU_CI_CONTROLLER=%s/controller\n' "${GITHUB_WORKSPACE}" >>"${GITHUB_ENV}"
+          printf 'HCU_CI_CHECKOUT=%s/source\n' "${GITHUB_WORKSPACE}" >>"${GITHUB_ENV}"
+          printf 'HCU_CI_JOB_STATUS_FILE=%s/lmcache-hcu-job-%s-%s-%s.status\n' \
+            "${RUNNER_TEMP}" "${HCU_CI_RUN_ID}" "${HCU_CI_ATTEMPT}" \
+            "${HCU_CI_JOB_KEY}" >>"${GITHUB_ENV}"
+
+      - name: Preflight and initialize
+        if: ${{ !cancelled() }}
+        run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
+
+      - name: Build or install and verify current wheel
+        if: ${{ always() && !cancelled() }}
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
+             [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
+            echo "Skipped because preflight did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" build
+
+      - name: Verify patches and prepare selected tests
+        if: ${{ always() && !cancelled() }}
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
+             [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
+            echo "Skipped because wheel preparation did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" prepare-tests
+
+      - name: Run selected test scope
+        if: ${{ always() && !cancelled() }}
+        run: |
+          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
+             [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
+            echo "Skipped because test preparation did not pass."
+            exit 0
+          fi
+          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" test
+
+      - name: Cleanup, validate and publish job result
+        if: always()
+        run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" finalize

@@ -10,6 +10,8 @@ readonly CHECKOUT_ROOT="${HCU_CI_CHECKOUT:?HCU_CI_CHECKOUT is required}"
 readonly HOST_HELPER="${CONTROLLER_ROOT}/ci/hcu/host.py"
 readonly PROFILE="${HCU_CI_PROFILE:-pr}"
 readonly MODEL_PROFILE="${HCU_CI_MODEL_PROFILE:-${PROFILE}}"
+readonly JOB_ROLE="${HCU_CI_JOB_ROLE:-framework}"
+readonly JOB_KEY="${HCU_CI_JOB_KEY:-framework}"
 readonly RUNNER_KIND="${HCU_CI_RUNNER_KIND:-nmz4}"
 readonly REPEAT="${HCU_CI_REPEAT:-1}"
 readonly RUN_ID="${HCU_CI_RUN_ID:-local-$(date -u +%Y%m%d%H%M%S)}"
@@ -47,6 +49,7 @@ LEASE_CONTAINER=""
 NETWORK_NAME=""
 TEST_TOOL_ROOT=""
 CACHE_RUN_ROOT=""
+PREBUILT_WHEEL_ROOT=""
 SOURCE_STATUS=""
 SOURCE_STATUS_SHA256=""
 
@@ -57,7 +60,7 @@ safe_token() {
 validate_job_status_file() {
     [[ -n "${JOB_STATUS_FILE}" ]]
     local expected
-    expected="$(readlink -m -- "${RUNNER_TEMP_ROOT}/lmcache-hcu-job-${RUN_ID}-${ATTEMPT}.status")"
+    expected="$(readlink -m -- "${RUNNER_TEMP_ROOT}/lmcache-hcu-job-${RUN_ID}-${ATTEMPT}-${JOB_KEY}.status")"
     [[ "$(readlink -m -- "${JOB_STATUS_FILE}")" == "${expected}" ]]
 }
 
@@ -91,8 +94,9 @@ resolve_context() {
     fi
     SOURCE_STATUS="$(git -C "${CHECKOUT_ROOT}" status --porcelain=v1 --untracked-files=all)"
     SOURCE_STATUS_SHA256="$(printf '%s' "${SOURCE_STATUS}" | sha256sum | awk '{print $1}')"
-    RUN_KEY="${RUN_ID}-${ATTEMPT}-${SOURCE_SHA:0:12}"
-    safe_token "${RUN_ID}" && safe_token "${ATTEMPT}" && safe_token "${RUN_KEY}"
+    RUN_KEY="${RUN_ID}-${ATTEMPT}-${SOURCE_SHA:0:12}-${JOB_KEY}"
+    safe_token "${RUN_ID}" && safe_token "${ATTEMPT}" && \
+        safe_token "${JOB_KEY}" && safe_token "${RUN_KEY}"
     WORK_ROOT="${WORK_BASE}/${RUN_KEY}"
     ensure_within "${WORK_ROOT}" "${WORK_BASE}"
     TRUSTED_STATE_ROOT="${WORK_ROOT}/trusted-state"
@@ -104,6 +108,9 @@ resolve_context() {
     LEASE_CONTAINER="lmcache-hcu-lease-${RUN_KEY}"
     NETWORK_NAME="lmcache-hcu-net-${RUN_KEY}"
     TEST_TOOL_ROOT="${TRUSTED_STATE_ROOT}/test-tool"
+    if [[ "${JOB_ROLE}" == "model" ]]; then
+        PREBUILT_WHEEL_ROOT="${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework/wheels"
+    fi
     if [[ -n "${CACHE_ROOT}" ]]; then
         CACHE_RUN_ROOT="${CACHE_ROOT}/${RUN_KEY}"
     fi
@@ -121,6 +128,8 @@ state_metadata_args() {
         --base-image "${BASE_IMAGE}" \
         --base-image-id "${BASE_IMAGE_ID}" \
         --run-key "${RUN_KEY}" \
+        --job-key "${JOB_KEY}" \
+        --job-role "${JOB_ROLE}" \
         --repeat "${REPEAT}" \
         --checkout-status-sha256 "${SOURCE_STATUS_SHA256}"
 }
@@ -193,7 +202,32 @@ validate_visible_devices() {
 }
 
 model_tests_required() {
-    [[ "${MODEL_PROFILE}" != "framework" ]]
+    [[ "${JOB_ROLE}" == "model" ]]
+}
+
+verify_prebuilt_wheel() {
+    [[ "${JOB_ROLE}" == "model" ]] || return 0
+    local framework_root
+    framework_root="$(dirname "${PREBUILT_WHEEL_ROOT}")"
+    [[ "$(readlink -m -- "${framework_root}")" == \
+        "${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework" ]]
+    [[ -f "${framework_root}/READY" && -f "${framework_root}/SHA256SUMS" ]]
+    [[ -f "${framework_root}/manifest.json" ]]
+    python3 - "${framework_root}/manifest.json" "${SOURCE_SHA}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    manifest = json.load(handle)
+assert manifest.get("status") == "passed"
+assert manifest.get("source_sha") == sys.argv[2]
+assert manifest.get("job_role") == "framework"
+assert manifest.get("job_key") == "framework"
+PY
+    (cd "${framework_root}" && sha256sum -c SHA256SUMS >/dev/null)
+    local -a wheels=()
+    mapfile -t wheels < <(find "${PREBUILT_WHEEL_ROOT}" -maxdepth 1 \
+        -type f -name '*.whl' -print | LC_ALL=C sort)
+    (( ${#wheels[@]} == 1 ))
 }
 
 visible_device_count() {
@@ -285,6 +319,12 @@ host_preflight() {
     [[ "${CONTAINER_CPUS}" =~ ^[1-9][0-9]*$ ]]
     [[ "${OUTPUT_LIMIT}" =~ ^[1-9][0-9]*[gGmM]$ ]]
     [[ "${PHASE_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]{2,5}$ ]]
+    [[ "${JOB_ROLE}" == "framework" || "${JOB_ROLE}" == "model" ]]
+    if [[ "${JOB_ROLE}" == "framework" ]]; then
+        [[ "${JOB_KEY}" == "framework" && "${MODEL_PROFILE}" == "framework" ]]
+    else
+        [[ "${JOB_KEY}" != "framework" && "${MODEL_PROFILE}" != "framework" ]]
+    fi
     [[ "${BASE_IMAGE}" =~ ^[A-Za-z0-9._:/-]+(:[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$ ]]
     [[ "${BASE_IMAGE_ID}" =~ ^sha256:[0-9a-f]{64}$ ]]
     [[ -d "${CHECKOUT_ROOT}/.git" && -d "${CONTROLLER_ROOT}/.git" ]]
@@ -298,6 +338,7 @@ host_preflight() {
         --visible-devices "${VISIBLE_DEVICES}" >/dev/null
     validate_cache_root
     model_mount_arguments >/dev/null
+    verify_prebuilt_wheel
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
     [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/"* ]]
     mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
@@ -385,6 +426,7 @@ start_test_container() {
             --mount "type=bind,src=${CACHE_RUN_ROOT}/localdisk,dst=/local_disk"
             --mount "type=bind,src=${CACHE_RUN_ROOT}/ssd,dst=/ssd"
             --mount "type=bind,src=${CACHE_RUN_ROOT}/posix,dst=/mnt/parastor_storage"
+            --mount "type=bind,src=${PREBUILT_WHEEL_ROOT},dst=/input/prebuilt-wheel,readonly"
         )
     fi
     docker run -d --init --name "${CONTAINER_NAME}" \
@@ -406,6 +448,7 @@ start_test_container() {
         --env HIP_VISIBLE_DEVICES="${VISIBLE_DEVICES}" --env CUDA_VISIBLE_DEVICES="${VISIBLE_DEVICES}" \
         --env HCU_CI_EXPECTED_DEVICE_COUNT="$(visible_device_count)" \
         --env HCU_CI_PROFILE="${PROFILE}" --env HCU_CI_REPEAT="${REPEAT}" \
+        --env HCU_CI_JOB_ROLE="${JOB_ROLE}" --env HCU_CI_JOB_KEY="${JOB_KEY}" \
         --env HCU_CI_MODEL_PROFILE="${MODEL_PROFILE}" --env HCU_CI_RUNNER_KIND="${RUNNER_KIND}" \
         --env HCU_CI_TEST_TOOL_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["commit"])' "${MODEL_MANIFEST}")" \
         --env HCU_CI_SOURCE_SHA="${SOURCE_SHA}" --env HCU_CI_HCU_ARCH="${HCU_CI_HCU_ARCH:-}" \
@@ -754,6 +797,7 @@ phase_finalize() {
         --spool "${TRUSTED_SPOOL}" --baseline "${CONTROLLER_ROOT}/ci/hcu/test-baseline.json" \
         --model-manifest "${MODEL_MANIFEST}" --model-profile "${MODEL_PROFILE}" \
         --runner-kind "${RUNNER_KIND}" \
+        --job-role "${JOB_ROLE}" --job-key "${JOB_KEY}" \
         --repeat "${REPEAT}" --primary-rc "${primary_rc}" --cleanup-rc "${cleanup_rc}" \
         --repository "${REPOSITORY}" --profile "${PROFILE}" --run-id "${RUN_ID}" \
         --attempt "${ATTEMPT}" --sha "${SOURCE_SHA}" --controller-sha "${CONTROLLER_SHA}" \

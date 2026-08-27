@@ -132,6 +132,18 @@
         {"scenario": "qwen3-8b-posix", "checks": ["long_doc"]}
       ]
     },
+    "pr-qwen-localdisk": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-localdisk", "checks": ["long_doc"]}
+      ]
+    },
+    "pr-qwen-posix": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-posix", "checks": ["long_doc"]}
+      ]
+    },
     "qwen-smoke": {
       "visible_devices": "0,1",
       "runs": [
@@ -147,6 +159,42 @@
         {"scenario": "qwen3-8b-posix", "checks": ["long_doc", "opencompass", "cmmlu"]},
         {"scenario": "deepseek-r1-w4a8-v2-cpu", "checks": ["long_doc", "cmmlu"]},
         {"scenario": "deepseek-r1-w4a8-v2-localdisk", "checks": ["long_doc", "opencompass", "cmmlu"]},
+        {"scenario": "deepseek-r1-w4a8-v2-posix", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "weekly-qwen-cpu": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-cpu", "checks": ["long_doc", "cmmlu"]}
+      ]
+    },
+    "weekly-qwen-localdisk": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-localdisk", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "weekly-qwen-posix": {
+      "visible_devices": "0,1",
+      "runs": [
+        {"scenario": "qwen3-8b-posix", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "weekly-deepseek-cpu": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "runs": [
+        {"scenario": "deepseek-r1-w4a8-v2-cpu", "checks": ["long_doc", "cmmlu"]}
+      ]
+    },
+    "weekly-deepseek-localdisk": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "runs": [
+        {"scenario": "deepseek-r1-w4a8-v2-localdisk", "checks": ["long_doc", "opencompass", "cmmlu"]}
+      ]
+    },
+    "weekly-deepseek-posix": {
+      "visible_devices": "0,1,2,3,4,5,6,7",
+      "runs": [
         {"scenario": "deepseek-r1-w4a8-v2-posix", "checks": ["long_doc", "opencompass", "cmmlu"]}
       ]
     },

@@ -14,6 +14,7 @@ readonly SANDBOX_ROOT="/sandbox"
 readonly SOURCE_INPUT="/input/source"
 readonly UPSTREAM_INPUT="/input/upstream"
 readonly TEST_TOOL_INPUT="/input/test-tool"
+readonly PREBUILT_WHEEL_INPUT="/input/prebuilt-wheel"
 readonly SOURCE_ROOT="${SANDBOX_ROOT}/source"
 readonly UPSTREAM_ROOT="${SANDBOX_ROOT}/upstream"
 readonly TEST_ROOT="${SANDBOX_ROOT}/test-suite/tests"
@@ -25,6 +26,7 @@ readonly WHEEL_ROOT="${OUTPUT_ROOT}/wheels"
 readonly REPORT_ROOT="${OUTPUT_ROOT}/reports"
 readonly LOG_ROOT="${OUTPUT_ROOT}/logs"
 readonly STATE_ROOT="${OUTPUT_ROOT}/state"
+readonly JOB_ROLE="${HCU_CI_JOB_ROLE:-framework}"
 
 CURRENT_STAGE="initializing"
 PATCH_GATE_STARTED=0
@@ -206,6 +208,17 @@ build_wheel() {
     )
 }
 
+stage_prebuilt_wheel() {
+    [[ "${JOB_ROLE}" == "model" ]]
+    [[ -d "${PREBUILT_WHEEL_INPUT}" ]]
+    local -a wheels=()
+    mapfile -t wheels < <(find "${PREBUILT_WHEEL_INPUT}" -maxdepth 1 \
+        -type f -name '*.whl' -print | LC_ALL=C sort)
+    (( ${#wheels[@]} == 1 ))
+    rm -f "${WHEEL_ROOT}"/*.whl
+    cp -- "${wheels[0]}" "${WHEEL_ROOT}/$(basename "${wheels[0]}")"
+}
+
 install_current_wheel() {
     local wheel baseline_rc after_rc
     wheel="$(find "${WHEEL_ROOT}" -maxdepth 1 -type f -name '*.whl' -print -quit)"
@@ -311,7 +324,11 @@ phase_initialize() {
 phase_build() {
     activate_environment
     run_phase build-tree 4 prepare_build_tree || return $?
-    run_phase build-wheel 4 build_wheel || return $?
+    if [[ "${JOB_ROLE}" == "framework" ]]; then
+        run_phase build-wheel 4 build_wheel || return $?
+    else
+        run_phase stage-prebuilt-wheel 4 stage_prebuilt_wheel || return $?
+    fi
     run_phase wheel-artifact 5 \
         python3 "${CI_HELPER}" verify-wheel \
             --wheel-dir "${WHEEL_ROOT}" \
@@ -335,13 +352,14 @@ phase_prepare_tests() {
             --manifest "${PATCH_MANIFEST}" \
             --upstream "${UPSTREAM_ROOT}" \
             --output "${OUTPUT_ROOT}/patch-report.json" || return $?
-    run_phase collect 7 \
-        python3 "${CI_HELPER}" discover \
-            --tests "${TEST_ROOT}" \
-            --config "${TEST_ROOT}/pytest.ini" \
-            --execute-dir "${EXECUTE_ROOT}" \
-            --output "${OUTPUT_ROOT}/test-inventory.json" || return $?
-    if [[ "${HCU_CI_MODEL_PROFILE}" != "framework" ]]; then
+    if [[ "${JOB_ROLE}" == "framework" ]]; then
+        run_phase collect 7 \
+            python3 "${CI_HELPER}" discover \
+                --tests "${TEST_ROOT}" \
+                --config "${TEST_ROOT}/pytest.ini" \
+                --execute-dir "${EXECUTE_ROOT}" \
+                --output "${OUTPUT_ROOT}/test-inventory.json" || return $?
+    else
         run_phase model-tool 7 \
             python3 "${MODEL_HELPER}" verify-tool \
                 --manifest "${MODEL_MANIFEST}" \
@@ -354,21 +372,23 @@ phase_prepare_tests() {
 phase_test() {
     activate_environment
     [[ -f "${OUTPUT_ROOT}/patch-report.json" ]]
-    [[ -f "${OUTPUT_ROOT}/test-inventory.json" ]]
     local repeat
-    for ((repeat = 1; repeat <= HCU_CI_REPEAT; repeat++)); do
-        execute_repeat "${repeat}"
-    done
-    run_phase aggregate 8 \
-        python3 "${CI_HELPER}" aggregate \
-            --inventory "${OUTPUT_ROOT}/test-inventory.json" \
-            --repeat "${HCU_CI_REPEAT}" \
-            --junit-dir "${REPORT_ROOT}" \
-            --state-dir "${STATE_ROOT}" \
-            --output "${OUTPUT_ROOT}/test-summary.json" \
-            --markdown "${OUTPUT_ROOT}/summary.md" || return $?
+    if [[ "${JOB_ROLE}" == "framework" ]]; then
+        [[ -f "${OUTPUT_ROOT}/test-inventory.json" ]]
+        for ((repeat = 1; repeat <= HCU_CI_REPEAT; repeat++)); do
+            execute_repeat "${repeat}"
+        done
+        run_phase aggregate 8 \
+            python3 "${CI_HELPER}" aggregate \
+                --inventory "${OUTPUT_ROOT}/test-inventory.json" \
+                --repeat "${HCU_CI_REPEAT}" \
+                --junit-dir "${REPORT_ROOT}" \
+                --state-dir "${STATE_ROOT}" \
+                --output "${OUTPUT_ROOT}/test-summary.json" \
+                --markdown "${OUTPUT_ROOT}/summary.md" || return $?
+    fi
     local -a tool_argument=()
-    if [[ "${HCU_CI_MODEL_PROFILE}" != "framework" ]]; then
+    if [[ "${JOB_ROLE}" == "model" ]]; then
         tool_argument+=(--tool "${TEST_TOOL_ROOT}")
     fi
     run_phase model-tests 8 \

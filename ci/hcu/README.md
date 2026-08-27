@@ -7,7 +7,7 @@ scenarios declared in `model-test-manifest.json`.
 
 ## Execution model
 
-GitHub Actions exposes one job as seven readable steps:
+Each execution unit still exposes seven readable steps:
 
 ```text
 Checkout trusted CI controller
@@ -19,11 +19,25 @@ Run HCU test suite
 Cleanup, validate and publish
 ```
 
+The workflows split those units into visible jobs. `framework-and-pytest`
+builds exactly one current-SHA wheel and runs the complete repository pytest
+inventory. Every selected model scenario then receives its own job, installs
+the already verified framework wheel from `/ci_public`, applies and verifies
+the same source patches in a fresh environment, and runs only that scenario.
+The final summary job verifies all child manifests, checksums and completion
+markers before creating the run-level `READY` marker. No GitHub Artifact is
+used and model jobs never rebuild the package.
+
+PR therefore has four visible jobs: framework, Qwen LocalDisk, Qwen POSIX and
+the required `hcu-tests` summary. Weekly has eight visible jobs: framework,
+six Qwen/DeepSeek scenario jobs and `weekly-summary`. The single nmz4 runner
+executes model jobs serially, but each has an independent timeout and an
+independent client/server log stream.
+
 The trusted controller comes from the protected target branch. The selected PR
 merge or manual revision is mounted read-only into a restricted container. A
-disposable source copy is used to build exactly one wheel, and that same wheel
-and virtual environment are reused for source-patch checks, pytest and model
-tests. The original checkout is never built in place.
+disposable source copy is used for wheel construction; the original checkout
+is never built in place.
 
 The fixed test-tool tar archive is read from the nmz4 `/ci_public` asset tree.
 The trusted host verifies its SHA256, rejects unsafe archive entries, verifies
@@ -48,16 +62,17 @@ self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4
 
 Profiles:
 
-- `pr`: repository pytest plus Qwen3-8B LocalDisk and POSIX long-document
-  checks; two visible devices, 60-minute workflow limit.
+- `pr`: one framework job plus independent Qwen3-8B LocalDisk and POSIX
+  long-document jobs; each job has its own 60-minute limit.
 - `framework`: repository pytest only; one visible device.
 - `qwen-smoke`: the two PR model scenarios; two visible devices.
-- `weekly-bw1100`: all enabled Qwen and DeepSeek scenarios; eight
-  visible devices.
+- `weekly-bw1100`: all enabled Qwen and DeepSeek scenarios, one scenario per
+  job; Qwen jobs expose two devices and DeepSeek jobs expose eight.
 - `full`: alias of `weekly-bw1100` for manual dispatch.
 
-The runner lock is held for the complete job, including two-device profiles, so
-another repository job cannot use the remaining cards concurrently.
+The runner lock is held for each complete execution unit. The nmz4 runner has a
+single worker and model jobs use `max-parallel: 1`, so split jobs cannot overlap
+or reuse cards while another scenario is active.
 
 ## Configuration
 
@@ -188,11 +203,19 @@ Results are atomically published under:
 
 ```text
 /ci_public/lmcache-das/<pr|manual|weekly>/<run-id>/<attempt>/<sha>/
+├── framework/
+├── <model-scenario>/
+├── aggregate-manifest.json
+├── summary.md
+├── SHA256SUMS
+└── READY
 ```
 
-The archive includes the wheel, pytest and model JUnit, raw model JSON,
-effective configs, logs, environment, test and model inventories, patch report,
-asset manifest, summary, checksums and `READY`.
+Each child directory contains its own JUnit, logs, environment, inventories,
+patch report, manifest, checksums and completion marker. The framework child
+owns the single wheel and pytest results; model children own their raw JSON,
+effective config and client/server logs. Top-level `READY` is written only when
+every expected child reports success and passes checksum validation.
 
 ## Static verification
 
