@@ -2,7 +2,6 @@ name: LMCache HCU Weekly
 
 on:
   schedule:
-    # Monday 02:00 Asia/Shanghai (Sunday 18:00 UTC).
     - cron: "0 18 * * 0"
   workflow_dispatch:
 
@@ -14,105 +13,97 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  hcu-tests:
-    name: hcu-tests
+  framework:
+    name: framework-and-pytest
+    if: >-
+      ${{
+        github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/v0.3.13_dev'
+      }}
+    uses: ./.github/workflows/ci-hcu-reusable.yml
+    with:
+      controller_ref: ${{ github.sha }}
+      source_ref: ${{ github.sha }}
+      source_sha_hint: ${{ github.sha }}
+      logical_profile: weekly
+      model_profile: framework
+      job_role: framework
+      job_key: framework
+      visible_devices: "0"
+      repeat: "1"
+      timeout_minutes: 90
+      phase_timeout_seconds: "4800"
+      container_memory: 56g
+
+  model-tests:
+    name: ${{ matrix.job_key }}
+    needs: framework
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - job_key: qwen-cpu
+            model_profile: weekly-qwen-cpu
+            visible_devices: "0,1"
+          - job_key: qwen-localdisk
+            model_profile: weekly-qwen-localdisk
+            visible_devices: "0,1"
+          - job_key: qwen-posix
+            model_profile: weekly-qwen-posix
+            visible_devices: "0,1"
+          - job_key: deepseek-cpu
+            model_profile: weekly-deepseek-cpu
+            visible_devices: "0,1,2,3,4,5,6,7"
+          - job_key: deepseek-localdisk
+            model_profile: weekly-deepseek-localdisk
+            visible_devices: "0,1,2,3,4,5,6,7"
+          - job_key: deepseek-posix
+            model_profile: weekly-deepseek-posix
+            visible_devices: "0,1,2,3,4,5,6,7"
+    uses: ./.github/workflows/ci-hcu-reusable.yml
+    with:
+      controller_ref: ${{ github.sha }}
+      source_ref: ${{ needs.framework.outputs.source_sha }}
+      source_sha_hint: ${{ needs.framework.outputs.source_sha }}
+      logical_profile: weekly
+      model_profile: ${{ matrix.model_profile }}
+      job_role: model
+      job_key: ${{ matrix.job_key }}
+      visible_devices: ${{ matrix.visible_devices }}
+      repeat: "1"
+      timeout_minutes: 360
+      phase_timeout_seconds: "21000"
+      container_memory: 128g
+
+  aggregate:
+    name: weekly-summary
+    needs: [framework, model-tests]
     if: >-
       ${{
         always() &&
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
-        vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true' &&
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.3.13_dev')
+        vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
     runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
-    timeout-minutes: 360
-    env:
-      HCU_CI_PROFILE: weekly
-      HCU_CI_MODEL_PROFILE: weekly-bw1100
-      HCU_CI_RUNNER_KIND: nmz4
-      HCU_CI_REPEAT: "1"
-      HCU_CI_BASE_IMAGE: ${{ vars.LMCACHE_HCU_BASE_IMAGE }}
-      HCU_CI_BASE_IMAGE_ID: ${{ vars.LMCACHE_HCU_BASE_IMAGE_ID }}
-      HCU_CI_ISOLATED_RUNNER: ${{ vars.LMCACHE_HCU_RUNNER_ISOLATED }}
-      HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
-      HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
-      HCU_CI_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
-      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock
-      HCU_CI_CACHE_ROOT: ${{ vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 }}
-      HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
-      HCU_CI_RUN_ID: ${{ github.run_id }}
-      HCU_CI_ATTEMPT: ${{ github.run_attempt }}
-      HCU_CI_CONTAINER_MEMORY: 128g
-      HCU_CI_CONTAINER_CPUS: "64"
-      HCU_CI_PHASE_TIMEOUT_SECONDS: "20400"
+    timeout-minutes: 10
     steps:
-      - name: Checkout trusted CI controller
+      - name: Checkout trusted aggregate controller
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
-          path: controller
           persist-credentials: false
 
-      - name: Checkout tested revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.sha }}
-          path: source
-          persist-credentials: false
-
-      - name: Preflight and initialize
-        if: ${{ !cancelled() }}
+      - name: Validate split jobs and publish run summary
         env:
-          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
-          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
-        run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
-
-      - name: Build and verify current wheel
-        if: ${{ always() && !cancelled() }}
-        env:
-          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
-          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
+          SOURCE_SHA: ${{ needs.framework.outputs.source_sha }}
         run: |
-          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
-             [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
-            echo "Skipped because preflight did not pass."
-            exit 0
-          fi
-          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" build
-
-      - name: Verify patches and collect tests
-        if: ${{ always() && !cancelled() }}
-        env:
-          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
-          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
-        run: |
-          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
-             [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
-            echo "Skipped because wheel build did not pass."
-            exit 0
-          fi
-          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" prepare-tests
-
-      - name: Run HCU test suite
-        if: ${{ always() && !cancelled() }}
-        env:
-          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
-          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
-        run: |
-          if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
-             [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
-            echo "Skipped because test preparation did not pass."
-            exit 0
-          fi
-          bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" test
-
-      - name: Cleanup, validate and publish
-        if: always()
-        env:
-          HCU_CI_CONTROLLER: ${{ github.workspace }}/controller
-          HCU_CI_CHECKOUT: ${{ github.workspace }}/source
-          HCU_CI_JOB_STATUS_FILE: ${{ runner.temp }}/lmcache-hcu-job-${{ github.run_id }}-${{ github.run_attempt }}.status
-        run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" finalize
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          python3 ci/hcu/aggregate-jobs.py \
+            --shared-root /ci_public/lmcache-das \
+            --profile weekly \
+            --run-id "${{ github.run_id }}" \
+            --attempt "${{ github.run_attempt }}" \
+            --sha "${SOURCE_SHA}" \
+            --expected-jobs framework,qwen-cpu,qwen-localdisk,qwen-posix,deepseek-cpu,deepseek-localdisk,deepseek-posix \
+            --repository "${{ github.repository }}"

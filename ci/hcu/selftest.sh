@@ -13,6 +13,8 @@ python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.arg
     "${SCRIPT_DIR}/host.py" "${SELFTEST_CACHE}/host.pyc"
 python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
     "${SCRIPT_DIR}/model-ci.py" "${SELFTEST_CACHE}/model-ci.pyc"
+python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+    "${SCRIPT_DIR}/aggregate-jobs.py" "${SELFTEST_CACHE}/aggregate-jobs.pyc"
 python3 -m json.tool "${SCRIPT_DIR}/compatibility.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/patch-manifest.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/test-baseline.json" >/dev/null
@@ -21,9 +23,26 @@ bash -n "${SCRIPT_DIR}/run.sh"
 bash -n "${SCRIPT_DIR}/run-tests.sh"
 python3 "${SCRIPT_DIR}/host.py" selftest
 python3 "${SCRIPT_DIR}/model-ci.py" selftest
+python3 "${SCRIPT_DIR}/aggregate-jobs.py" --selftest
 python3 "${SCRIPT_DIR}/model-ci.py" validate \
     --manifest "${SCRIPT_DIR}/model-test-manifest.json" \
     --profile pr --runner nmz4 --visible-devices 0,1 >/dev/null
+while IFS='|' read -r profile devices; do
+    python3 "${SCRIPT_DIR}/model-ci.py" validate \
+        --manifest "${SCRIPT_DIR}/model-test-manifest.json" \
+        --profile "${profile}" --runner nmz4 \
+        --visible-devices "${devices}" >/dev/null
+done <<'EOF'
+framework|0
+pr-qwen-localdisk|0,1
+pr-qwen-posix|0,1
+weekly-qwen-cpu|0,1
+weekly-qwen-localdisk|0,1
+weekly-qwen-posix|0,1
+weekly-deepseek-cpu|0,1,2,3,4,5,6,7
+weekly-deepseek-localdisk|0,1,2,3,4,5,6,7
+weekly-deepseek-posix|0,1,2,3,4,5,6,7
+EOF
 
 STATE_FILE="${SELFTEST_CACHE}/state/state.json"
 STATUS_SHA="$(printf clean | sha256sum | awk '{print $1}')"
@@ -38,6 +57,8 @@ STATE_ARGS=(
     --base-image example.invalid/lmcache@sha256:3333333333333333333333333333333333333333333333333333333333333333
     --base-image-id sha256:4444444444444444444444444444444444444444444444444444444444444444
     --run-key selftest-1-111111111111
+    --job-key framework
+    --job-role framework
     --repeat 1
     --checkout-status-sha256 "${STATUS_SHA}"
 )

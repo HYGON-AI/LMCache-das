@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,22 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TEST_TOOL_ASSET_ROOT = "/ci_public/lmcache-das/assets/test-tool/"
 ALLOWED_MODEL_ENVIRONMENT = {"VLLM_USE_CAT_MLA": {"1"}}
+ALLOWED_CONFIG_FIXES = {
+    "qwen3-8b-cpu": {"vllm.disable-cascade-attn"},
+}
+ALLOWED_CONFIG_OVERRIDES = {
+    "qwen3-8b-cpu": {"vllm.gpu-memory-utilization": "0.20"},
+}
+ALLOWED_LONG_DOC_OPTIONS = {
+    "document_length": (1024, 65536),
+    "num_documents": (1, 100),
+    "output_len": (1, 256),
+    "max_inflight_requests": (1, 64),
+}
+ALLOWED_OPENCOMPASS_OPTIONS = {
+    "batch_size": (1, 32),
+}
+ALLOWED_LONG_DOC_VALIDATIONS = {"tool", "cpu_memory"}
 
 
 def read_json(path):
@@ -109,10 +126,28 @@ def validate_manifest(manifest):
         raise ModelCIError("image_contract must be an object")
     if image_contract.get("opencompass_dir") != "/lmcache_workspace/opencompass":
         raise ModelCIError("the reviewed OpenCompass root changed")
-    if image_contract.get("cmmlu_dataset_host_path") != "/public/opendas/DL_DATA/opencompass_data/cmmlu":
-        raise ModelCIError("the reviewed CMMLU host path changed")
-    if image_contract.get("cmmlu_dataset_dir") != "/public/ai_data/datasets/cmmlu":
-        raise ModelCIError("the reviewed CMMLU container path changed")
+    if image_contract.get("dataset_host_path") != "/public/opendas/DL_DATA/opencompass_data":
+        raise ModelCIError("the reviewed evaluation dataset host path changed")
+    if image_contract.get("cmmlu_host_path") != "/public/opendas/DL_DATA/opencompass_data/cmmlu":
+        raise ModelCIError("the reviewed CMMLU dataset host path changed")
+    if image_contract.get("dataset_dir") != "/public/ai_data/datasets":
+        raise ModelCIError("the reviewed evaluation dataset container path changed")
+    if image_contract.get("opencompass_dataset_dir") != "/public/ai_data/datasets/data":
+        raise ModelCIError("the reviewed OpenCompass dataset compatibility path changed")
+    timeouts = manifest.get("timeouts")
+    required_timeouts = {
+        "start_model_seconds",
+        "start_api_seconds",
+        "long_doc_seconds",
+        "opencompass_seconds",
+        "cmmlu_seconds",
+        "cleanup_seconds",
+    }
+    if not isinstance(timeouts, dict) or set(timeouts) != required_timeouts:
+        raise ModelCIError("the model timeout contract changed")
+    for name, value in timeouts.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ModelCIError("model timeout {} must be a positive integer".format(name))
     for model_id, model in models.items():
         if not TOKEN.match(model_id) or not isinstance(model, dict):
             raise ModelCIError("invalid model declaration: {}".format(model_id))
@@ -136,6 +171,15 @@ def validate_manifest(manifest):
                         model_id, name, value
                     )
                 )
+        start_model_attempts = model.get("start_model_attempts", 1)
+        if (
+            isinstance(start_model_attempts, bool)
+            or not isinstance(start_model_attempts, int)
+            or not 1 <= start_model_attempts <= 2
+        ):
+            raise ModelCIError(
+                "model {} has an invalid start_model_attempts value".format(model_id)
+            )
         required_options = model.get("required_vllm_options", {})
         if not isinstance(required_options, dict):
             raise ModelCIError("model {} required_vllm_options must be an object".format(model_id))
@@ -150,6 +194,64 @@ def validate_manifest(manifest):
         config = str(scenario.get("config", ""))
         if config.startswith("/") or ".." in Path(config).parts or not config.endswith(".conf"):
             raise ModelCIError("scenario {} has an unsafe config path".format(scenario_id))
+        config_fixes = scenario.get("config_fixes", {})
+        if not isinstance(config_fixes, dict) or set(config_fixes) - {
+            "drop_duplicate_options",
+            "set_options",
+        }:
+            raise ModelCIError("scenario {} has unsupported config fixes".format(scenario_id))
+        duplicate_options = config_fixes.get("drop_duplicate_options", [])
+        if not isinstance(duplicate_options, list) or any(
+            not isinstance(item, str) or not re.match(r"^[a-z0-9_.-]+\.[a-z0-9_.-]+$", item)
+            for item in duplicate_options
+        ):
+            raise ModelCIError("scenario {} has invalid duplicate option fixes".format(scenario_id))
+        if set(duplicate_options) != ALLOWED_CONFIG_FIXES.get(scenario_id, set()):
+            raise ModelCIError("scenario {} config fixes differ from the reviewed allowlist".format(scenario_id))
+        option_overrides = config_fixes.get("set_options", {})
+        if (
+            not isinstance(option_overrides, dict)
+            or option_overrides != ALLOWED_CONFIG_OVERRIDES.get(scenario_id, {})
+        ):
+            raise ModelCIError(
+                "scenario {} config overrides differ from the reviewed allowlist".format(
+                    scenario_id
+                )
+            )
+        long_doc_validation = scenario.get("long_doc_validation", "tool")
+        if long_doc_validation not in ALLOWED_LONG_DOC_VALIDATIONS:
+            raise ModelCIError("scenario {} has an invalid long-document validation".format(scenario_id))
+        if (scenario.get("backend") == "cpu") != (long_doc_validation == "cpu_memory"):
+            raise ModelCIError("scenario {} has a mismatched CPU validation policy".format(scenario_id))
+        long_doc_options = scenario.get("long_doc_options", {})
+        if not isinstance(long_doc_options, dict) or set(long_doc_options) - set(ALLOWED_LONG_DOC_OPTIONS):
+            raise ModelCIError("scenario {} has invalid long-document options".format(scenario_id))
+        for name, value in long_doc_options.items():
+            lower, upper = ALLOWED_LONG_DOC_OPTIONS[name]
+            if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
+                raise ModelCIError(
+                    "scenario {} has an invalid {} value".format(scenario_id, name)
+                )
+        opencompass_options = scenario.get("opencompass_options", {})
+        if (
+            not isinstance(opencompass_options, dict)
+            or set(opencompass_options) - set(ALLOWED_OPENCOMPASS_OPTIONS)
+        ):
+            raise ModelCIError(
+                "scenario {} has invalid OpenCompass options".format(scenario_id)
+            )
+        for name, value in opencompass_options.items():
+            lower, upper = ALLOWED_OPENCOMPASS_OPTIONS[name]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not lower <= value <= upper
+            ):
+                raise ModelCIError(
+                    "scenario {} has an invalid OpenCompass {} value".format(
+                        scenario_id, name
+                    )
+                )
     for profile in profiles:
         value = profile_config(manifest, profile)
         devices = str(value.get("visible_devices", ""))
@@ -213,12 +315,18 @@ def cmd_mounts(args):
         for run in selected_runs(manifest, args.profile)
         for check in run["checks"]
     }
-    if "cmmlu" in checks:
+    if checks & {"opencompass", "cmmlu"}:
         contract = manifest["image_contract"]
         print(
             "{}\t{}".format(
-                contract["cmmlu_dataset_host_path"],
-                contract["cmmlu_dataset_dir"],
+                contract["dataset_host_path"],
+                contract["opencompass_dataset_dir"],
+            )
+        )
+        print(
+            "{}\t{}".format(
+                contract["cmmlu_host_path"],
+                contract["dataset_dir"] + "/cmmlu",
             )
         )
     return 0
@@ -289,6 +397,209 @@ def parse_vllm_config(path):
     tp = parser.getint("vllm", "tensor-parallel-size", fallback=1)
     options = {name: value.strip().strip("'\"") for name, value in parser.items("vllm")}
     return model, tp, options
+
+
+def deduplicate_config_options(text, reviewed_options):
+    targets = set()
+    for value in reviewed_options:
+        section, option = value.rsplit(".", 1)
+        targets.add((section.lower(), option.lower()))
+    current_section = ""
+    seen = set()
+    removed = set()
+    result = []
+    section_pattern = re.compile(r"^\s*\[([^]]+)\]\s*$")
+    option_pattern = re.compile(r"^\s*([^#;][^:=]*?)\s*[:=]")
+    for line in text.splitlines(keepends=True):
+        section_match = section_pattern.match(line)
+        if section_match:
+            current_section = section_match.group(1).strip().lower()
+            result.append(line)
+            continue
+        option_match = option_pattern.match(line)
+        if option_match:
+            key = (current_section, option_match.group(1).strip().lower())
+            if key in targets:
+                if key in seen:
+                    removed.add(key)
+                    continue
+                seen.add(key)
+        result.append(line)
+    if removed != targets:
+        missing = sorted("{}.{}".format(*item) for item in targets - removed)
+        raise ModelCIError(
+            "reviewed duplicate config options were not found exactly as expected: {}".format(
+                ", ".join(missing)
+            )
+        )
+    return "".join(result)
+
+
+def override_config_options(text, reviewed_options):
+    targets = {}
+    for name, value in reviewed_options.items():
+        section, option = name.rsplit(".", 1)
+        targets[(section.lower(), option.lower())] = str(value)
+    current_section = ""
+    replaced = set()
+    result = []
+    section_pattern = re.compile(r"^\s*\[([^]]+)\]\s*$")
+    option_pattern = re.compile(
+        r"^(\s*)([^#;][^:=]*?)(\s*)([:=])(\s*)(.*?)(\r?\n)?$"
+    )
+    for line in text.splitlines(keepends=True):
+        section_match = section_pattern.match(line)
+        if section_match:
+            current_section = section_match.group(1).strip().lower()
+            result.append(line)
+            continue
+        option_match = option_pattern.match(line)
+        if option_match:
+            key = (current_section, option_match.group(2).strip().lower())
+            if key in targets:
+                if key in replaced:
+                    raise ModelCIError(
+                        "reviewed config override matched a duplicate option: {}.{}".format(
+                            *key
+                        )
+                    )
+                newline = option_match.group(7) or ""
+                line = "{}{}{}{}{}{}{}".format(
+                    option_match.group(1),
+                    option_match.group(2),
+                    option_match.group(3),
+                    option_match.group(4),
+                    option_match.group(5),
+                    targets[key],
+                    newline,
+                )
+                replaced.add(key)
+        result.append(line)
+    if replaced != set(targets):
+        missing = sorted(
+            "{}.{}".format(*item) for item in set(targets) - replaced
+        )
+        raise ModelCIError(
+            "reviewed config override targets were not found: {}".format(
+                ", ".join(missing)
+            )
+        )
+    return "".join(result)
+
+
+def prepare_effective_config(tool_root, scenario, case_id):
+    reviewed_root = Path(tool_root).resolve()
+    source = (reviewed_root / scenario["config"]).resolve()
+    try:
+        source.relative_to(reviewed_root)
+    except ValueError:
+        raise ModelCIError("scenario config escaped the reviewed test tool")
+    text = source.read_text(encoding="utf-8")
+    duplicate_options = scenario.get("config_fixes", {}).get(
+        "drop_duplicate_options", []
+    )
+    if duplicate_options:
+        text = deduplicate_config_options(text, duplicate_options)
+    option_overrides = scenario.get("config_fixes", {}).get("set_options", {})
+    if option_overrides:
+        text = override_config_options(text, option_overrides)
+    destination_root = reviewed_root / "vllm_conf" / ".ci-effective"
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination = destination_root / "{}.conf".format(case_id)
+    destination.write_text(text, encoding="utf-8")
+    return destination
+
+
+def copy_opencompass_tree(source, destination):
+    source = Path(source).resolve()
+    destination = Path(destination)
+    if not (source / "run.py").is_file() or not (source / "opencompass").is_dir():
+        raise ModelCIError("the reviewed OpenCompass source tree is incomplete")
+    if destination.exists():
+        raise ModelCIError("the writable OpenCompass destination already exists")
+    shutil.copytree(
+        str(source),
+        str(destination),
+        ignore=shutil.ignore_patterns(
+            ".git", "__pycache__", "tmp", "work_dirs", "outputs"
+        ),
+    )
+    (destination / "tmp").mkdir(mode=0o700)
+    if not (destination / "run.py").is_file() or not (destination / "opencompass").is_dir():
+        raise ModelCIError("the writable OpenCompass copy is incomplete")
+    return destination
+
+
+def prepare_opencompass_conda_shim(tool_root, opencompass_dir):
+    """Provide the fixed test tool with an offline ``conda run`` adapter.
+
+    The reviewed CMMLU script invokes OpenCompass through a private Conda
+    environment.  The CI image already contains the reviewed OpenCompass tree
+    and its dependencies, so downloading and unpacking another environment is
+    both unnecessary and incompatible with the offline test container.  This
+    shim implements only the three commands used by the fixed test tool and
+    forwards them to the current CI interpreter and OpenCompass copy.
+    """
+    tool_root = Path(tool_root).resolve()
+    opencompass_dir = Path(opencompass_dir).resolve()
+    if not (opencompass_dir / "run.py").is_file():
+        raise ModelCIError("the CMMLU OpenCompass runtime is incomplete")
+    shim = tool_root / ".runtime" / "miniconda3" / "bin" / "conda"
+    shim.parent.mkdir(parents=True, exist_ok=True)
+    interpreter = shlex.quote(str(Path(sys.executable).resolve()))
+    source_root = shlex.quote(str(opencompass_dir))
+    run_py = shlex.quote(str(opencompass_dir / "run.py"))
+    shim.write_text(
+        """#!/bin/sh
+set -eu
+if [ \"$#\" -eq 1 ] && [ \"$1\" = \"--version\" ]; then
+    echo \"conda 0.0-lmcache-ci\"
+    exit 0
+fi
+if [ \"$#\" -ge 3 ] && [ \"$1\" = \"run\" ] && [ \"$2\" = \"-n\" ]; then
+    shift 3
+fi
+export PYTHONPATH={source_root}${{PYTHONPATH:+:$PYTHONPATH}}
+case \"${{1-}}\" in
+    python|python3)
+        shift
+        exec {interpreter} \"$@\"
+        ;;
+    opencompass)
+        shift
+        exec {interpreter} {run_py} \"$@\"
+        ;;
+    *)
+        exec \"$@\"
+        ;;
+esac
+""".format(
+            source_root=source_root,
+            interpreter=interpreter,
+            run_py=run_py,
+        ),
+        encoding="utf-8",
+    )
+    shim.chmod(0o700)
+    probe = subprocess.run(
+        [str(shim), "run", "-n", "opencompassenv", "python", "-c",
+         "import opencompass; print(opencompass.__file__)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    if probe.returncode != 0 or not probe.stdout.strip():
+        raise ModelCIError(
+            "the offline CMMLU OpenCompass adapter failed: {}".format(
+                probe.stderr.strip()
+            )
+        )
+    return {
+        "kind": "offline-conda-run-shim",
+        "path": str(shim),
+        "python": str(Path(sys.executable).resolve()),
+        "opencompass": str(opencompass_dir),
+    }
 
 
 def verify_tool(manifest, tool_root, profile):
@@ -371,17 +682,23 @@ def require_integer(record, name):
         raise ModelCIError("{} is not an integer".format(name))
 
 
-def validate_complete_long_doc(record):
+def validate_complete_long_doc(record, require_tool_success=True, expected_prompts=None):
     details = record.get("long_doc_qa_result")
     if not isinstance(details, dict):
         raise ModelCIError("long_doc result is missing long_doc_qa_result")
-    if record.get("long_doc_qa_tput_result") is not True:
+    if require_tool_success and record.get("long_doc_qa_tput_result") is not True:
         raise ModelCIError("long_doc_qa_tput_result is not true")
     for phase in ("warmup", "query"):
         total_name = "{}_round_prompt_count".format(phase)
         success_name = "{}_round_successful_prompt_count".format(phase)
         total = require_integer(details, total_name)
         successful = require_integer(details, success_name)
+        if expected_prompts is not None and total != expected_prompts:
+            raise ModelCIError(
+                "long_doc {} declared {} requests instead of {}".format(
+                    phase, total, expected_prompts
+                )
+            )
         if total <= 0 or successful != total:
             raise ModelCIError(
                 "long_doc {} completed {}/{} requests".format(
@@ -390,7 +707,39 @@ def validate_complete_long_doc(record):
             )
 
 
-def validate_result_records(path, expected_steps, require_complete_long_doc=True):
+def validate_cpu_memory_long_doc(record, expected_prompts):
+    validate_complete_long_doc(
+        record, require_tool_success=False, expected_prompts=expected_prompts
+    )
+    details = record["long_doc_qa_result"]
+    try:
+        warmup = float(details["warmup_round_mean_TTFT_seconds"])
+        query = float(details["query_round_mean_TTFT_seconds"])
+    except (KeyError, TypeError, ValueError):
+        raise ModelCIError("CPU long_doc result is missing numeric TTFT metrics")
+    if query >= warmup:
+        raise ModelCIError(
+            "CPU long_doc query TTFT {:.3f}s is not below warmup {:.3f}s".format(
+                query, warmup
+            )
+        )
+    stats = record.get("lmcache_log_stats")
+    if not isinstance(stats, dict):
+        raise ModelCIError("CPU long_doc result is missing LMCache log statistics")
+    for name in ("stored_count", "retrieve_count", "need_to_load_count"):
+        if require_integer(stats, name) <= 0:
+            raise ModelCIError("CPU long_doc {} is not positive".format(name))
+    if record.get("offload_path_sizes") not in ({}, None):
+        raise ModelCIError("CPU long_doc unexpectedly used a filesystem backend")
+
+
+def validate_result_records(
+    path,
+    expected_steps,
+    require_complete_long_doc=True,
+    long_doc_validation="tool",
+    expected_long_doc_prompts=None,
+):
     with Path(path).open(encoding="utf-8") as handle:
         records = json.load(handle)
     if not isinstance(records, list):
@@ -407,6 +756,13 @@ def validate_result_records(path, expected_steps, require_complete_long_doc=True
         matches = by_step.get(step, [])
         if len(matches) != 1:
             problems.append("{} appears {} times".format(step, len(matches)))
+        elif step == "long_doc" and long_doc_validation == "cpu_memory":
+            try:
+                validate_cpu_memory_long_doc(
+                    matches[0], expected_long_doc_prompts
+                )
+            except ModelCIError as exc:
+                problems.append(str(exc))
         elif matches[0].get("result") != "success":
             problems.append("{} result is {!r}".format(step, matches[0].get("result")))
         elif step == "long_doc" and require_complete_long_doc:
@@ -464,21 +820,88 @@ def run_command(command, cwd, timeout, log_handle, environment=None):
     return return_code, time.time() - started
 
 
-def scenario_commands(manifest, tool_root, scenario_id, checks, results_dir, logs_dir, work_dir):
-    scenario = manifest["scenarios"][scenario_id]
-    config = str(tool_root / scenario["config"])
+def retryable_start_failure(result_path, tool_root):
+    """Only retry the reviewed first-request compilation timeout signature."""
+    try:
+        with Path(result_path).open(encoding="utf-8") as handle:
+            records = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(records, list):
+        return False
+    matches = [
+        item
+        for item in records
+        if isinstance(item, dict) and item.get("step_name") == "start_model_vllm"
+    ]
+    if len(matches) != 1 or matches[0].get("result") != "failed":
+        return False
+    model_log = matches[0].get("model_log_file_path")
+    if not isinstance(model_log, str) or not model_log:
+        return False
+    try:
+        model_log_path = Path(model_log).resolve()
+        allowed_root = (Path(tool_root) / "lmcache_test" / "logs").resolve()
+        model_log_path.relative_to(allowed_root)
+        text = model_log_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return False
+    required = (
+        "RPC call to sample_tokens timed out",
+        "EngineDeadError: EngineCore encountered an issue",
+    )
+    rejected = ("OutOfMemoryError", "HIP out of memory", "MemoryError")
+    return all(marker in text for marker in required) and not any(
+        marker in text for marker in rejected
+    )
+
+
+def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir, work_dir, opencompass_dir, scenario):
+    config = str(config)
     python = sys.executable
     commands = [
         ("prepare-output", [python, "-m", "lmcache_test.prepare_output_dir", "--logs_dir", str(logs_dir), "--results_dir", str(results_dir), "--step_name", "prepare_output_dir"], 300),
         ("check-init", [python, "-m", "lmcache_test.check_init", "--vllm_conf", config, "--logs_dir", str(logs_dir), "--results_dir", str(results_dir), "--step_name", "check_init"], 600),
-        ("start-model", [python, "-m", "lmcache_test.start_model_vllm", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "start_model_vllm"], int(manifest["timeouts"]["start_model_seconds"])),
+        (
+            "start-model",
+            [
+                python,
+                "-m",
+                "lmcache_test.start_model_vllm",
+                "--vllm_conf",
+                config,
+                "--results_dir",
+                str(results_dir),
+                "--step_name",
+                "start_model_vllm",
+                "--api_timeout",
+                str(manifest["timeouts"]["start_api_seconds"]),
+            ],
+            int(manifest["timeouts"]["start_model_seconds"]),
+        ),
     ]
     expected = ["prepare_output_dir", "check_init", "start_model_vllm"]
     if "long_doc" in checks:
-        commands.append(("long-doc", [python, "-m", "lmcache_test.long_doc_qa_tput", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "long_doc", "--timeout", str(manifest["timeouts"]["long_doc_seconds"]), "--json-output"], int(manifest["timeouts"]["long_doc_seconds"]) + 60))
+        command = [python, "-m", "lmcache_test.long_doc_qa_tput", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "long_doc", "--timeout", str(manifest["timeouts"]["long_doc_seconds"]), "--json-output"]
+        option_flags = {
+            "document_length": "--document-length",
+            "num_documents": "--num-documents",
+            "output_len": "--output-len",
+            "max_inflight_requests": "--max-inflight-requests",
+        }
+        for name, value in sorted(scenario.get("long_doc_options", {}).items()):
+            command.extend([option_flags[name], str(value)])
+        commands.append(("long-doc", command, int(manifest["timeouts"]["long_doc_seconds"]) + 60))
         expected.append("long_doc")
     if "opencompass" in checks:
-        commands.append(("opencompass", [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", manifest["image_contract"]["opencompass_dir"], "--work_dir", str(work_dir / "opencompass"), "--timeout", str(manifest["timeouts"]["opencompass_seconds"]), "--acc-threshold", str(manifest["thresholds"]["humaneval"])], int(manifest["timeouts"]["opencompass_seconds"]) + 60))
+        if opencompass_dir is None:
+            raise ModelCIError("the scenario requires a writable OpenCompass tree")
+        command = [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", str(opencompass_dir), "--work_dir", str(work_dir / "opencompass"), "--timeout", str(manifest["timeouts"]["opencompass_seconds"]), "--acc-threshold", str(manifest["thresholds"]["humaneval"])]
+        if "batch_size" in scenario.get("opencompass_options", {}):
+            command.extend(
+                ["--batch-size", str(scenario["opencompass_options"]["batch_size"])]
+            )
+        commands.append(("opencompass", command, int(manifest["timeouts"]["opencompass_seconds"]) + 60))
         expected.append("opencompass")
     if "cmmlu" in checks:
         commands.append(("cmmlu", [python, str(tool_root / "cases/3-vllm-func/103-vllm-demo-cmmlu_prompt_long.py"), "--vllm_conf", config, "--work_dir", str(work_dir / "cmmlu"), "--strict_log_check"], int(manifest["timeouts"]["cmmlu_seconds"])))
@@ -513,7 +936,7 @@ def write_junit(path, cases):
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
-def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_root):
+def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_root, opencompass_dir):
     case_id = "{}-repeat-{}".format(scenario_id, repeat_index)
     scenario_root = Path("/sandbox/model-runs") / case_id
     results_dir = scenario_root / "results"
@@ -523,17 +946,29 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         directory.mkdir(parents=True, exist_ok=True)
     log_path = Path(output_root) / "logs" / "model-{}.log".format(case_id)
     result_path = results_dir / "lmcache_test_result.json"
+    scenario = manifest["scenarios"][scenario_id]
+    config = prepare_effective_config(tool_root, scenario, case_id)
     commands, expected, config = scenario_commands(
-        manifest, tool_root, scenario_id, checks, results_dir, logs_dir, work_dir
+        manifest, tool_root, config, checks, results_dir, logs_dir, work_dir,
+        opencompass_dir, scenario
     )
     model = manifest["models"][manifest["scenarios"][scenario_id]["model"]]
     scenario_environment = dict(model.get("environment", {}))
     command_environment = os.environ.copy()
     command_environment.update(scenario_environment)
+    tool_python_path = str(tool_root / "lib")
+    inherited_python_path = command_environment.get("PYTHONPATH", "").strip()
+    command_environment["PYTHONPATH"] = (
+        tool_python_path
+        if not inherited_python_path
+        else tool_python_path + os.pathsep + inherited_python_path
+    )
+    command_environment["COMPASS_DATA_CACHE"] = manifest["image_contract"]["dataset_dir"]
     failure = None
     duration = 0.0
     cmmlu_rc = None
     model_log_printed = False
+    start_model_attempts_used = 0
     with log_path.open("w", encoding="utf-8", errors="replace") as log_handle:
         if scenario_environment:
             environment_line = "# reviewed environment: {}\n".format(
@@ -548,22 +983,119 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
             sys.stdout.flush()
         for step, command, timeout in commands:
             stream = "server" if step == "print-model-log" else "client"
-            print(
-                "::group::Model {} / {} {} log".format(case_id, step, stream),
-                flush=True,
+            max_attempts = (
+                int(model.get("start_model_attempts", 1))
+                if step == "start-model"
+                else 1
             )
-            try:
-                rc, elapsed = run_command(
-                    command, tool_root, timeout, log_handle, command_environment
+            attempt = 0
+            while True:
+                attempt += 1
+                if step == "start-model":
+                    start_model_attempts_used = attempt
+                attempt_suffix = (
+                    " attempt {}/{}".format(attempt, max_attempts)
+                    if max_attempts > 1
+                    else ""
                 )
-            finally:
-                print("::endgroup::", flush=True)
-            duration += elapsed
+                print(
+                    "::group::Model {} / {}{} {} log".format(
+                        case_id, step, attempt_suffix, stream
+                    ),
+                    flush=True,
+                )
+                try:
+                    rc, elapsed = run_command(
+                        command, tool_root, timeout, log_handle, command_environment
+                    )
+                finally:
+                    print("::endgroup::", flush=True)
+                duration += elapsed
+                if (
+                    step != "start-model"
+                    or rc == 0
+                    or attempt >= max_attempts
+                    or not retryable_start_failure(result_path, tool_root)
+                ):
+                    break
+
+                print(
+                    "Cold start hit the reviewed sample_tokens "
+                    "timeout; cleaning up and retrying once.",
+                    flush=True,
+                )
+                print_command = next(
+                    item[1] for item in commands if item[0] == "print-model-log"
+                )
+                _, elapsed = run_command(
+                    print_command, tool_root, 600, log_handle, command_environment
+                )
+                duration += elapsed
+                retry_cleanup_command = [
+                    sys.executable,
+                    "-m",
+                    "lmcache_test.clean_kvcache",
+                    "--results_dir",
+                    str(results_dir),
+                    "--vllm_conf",
+                    config,
+                    "--step_name",
+                    "clean_kvcache",
+                ]
+                retry_cleanup_rc, elapsed = run_command(
+                    retry_cleanup_command,
+                    tool_root,
+                    int(manifest["timeouts"]["cleanup_seconds"]),
+                    log_handle,
+                    command_environment,
+                )
+                duration += elapsed
+                retry_evidence = (
+                    Path(output_root)
+                    / "model-results"
+                    / "{}.startup-attempt-{}.json".format(case_id, attempt)
+                )
+                if result_path.is_file():
+                    shutil.copyfile(str(result_path), str(retry_evidence))
+                if retry_cleanup_rc != 0:
+                    rc = retry_cleanup_rc
+                    break
+
+                retry_setup_failed = False
+                for retry_step, retry_command, retry_timeout in commands[:2]:
+                    print(
+                        "::group::Model {} / retry-{} client log".format(
+                            case_id, retry_step
+                        ),
+                        flush=True,
+                    )
+                    try:
+                        retry_rc, elapsed = run_command(
+                            retry_command,
+                            tool_root,
+                            retry_timeout,
+                            log_handle,
+                            command_environment,
+                        )
+                    finally:
+                        print("::endgroup::", flush=True)
+                    duration += elapsed
+                    if retry_rc != 0:
+                        rc = retry_rc
+                        retry_setup_failed = True
+                        break
+                if retry_setup_failed:
+                    break
             if step == "print-model-log":
                 model_log_printed = True
             if step == "cmmlu":
                 cmmlu_rc = rc
-            if rc != 0 and step not in {"print-model-log"}:
+            tolerated_cpu_result = (
+                step == "long-doc"
+                and rc == 1
+                and scenario.get("long_doc_validation") == "cpu_memory"
+            )
+            if rc != 0 and step not in {"print-model-log"} and not tolerated_cpu_result:
                 failure = "{} exited with {}".format(step, rc)
                 break
 
@@ -616,6 +1148,8 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
                 raw_destination,
                 expected,
                 bool(manifest["thresholds"].get("long_doc_require_all_requests", True)),
+                scenario.get("long_doc_validation", "tool"),
+                scenario.get("long_doc_options", {}).get("num_documents", 50),
             )
         except Exception as exc:
             failure = failure or str(exc)
@@ -633,7 +1167,12 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         "failure": failure,
         "result_file": raw_destination.name if raw_destination.exists() else None,
         "config_sha256": sha256_file(config_destination),
+        "config_fixes": dict(scenario.get("config_fixes", {})),
+        "long_doc_validation": scenario.get("long_doc_validation", "tool"),
+        "long_doc_options": dict(scenario.get("long_doc_options", {})),
         "environment": scenario_environment,
+        "start_model_attempts_used": start_model_attempts_used,
+        "opencompass_options": dict(scenario.get("opencompass_options", {})),
     }
 
 
@@ -656,6 +1195,7 @@ def cmd_run(args):
         "tool_commit": manifest["tool"]["commit"] if runs else None,
         "models": [],
     }
+    runtime_opencompass_dir = None
     if runs:
         if tool_root is None:
             raise ModelCIError("the selected profile requires a test tool checkout")
@@ -663,21 +1203,48 @@ def cmd_run(args):
         required_checks = {
             check for run in runs for check in run["checks"]
         }
-        if "opencompass" in required_checks:
+        if required_checks & {"opencompass", "cmmlu"}:
             opencompass_root = Path(manifest["image_contract"]["opencompass_dir"])
             candidates = (opencompass_root, opencompass_root / "opencompass")
-            if not any(
-                (candidate / "run.py").is_file()
+            source_opencompass = next((
+                candidate for candidate in candidates
+                if (candidate / "run.py").is_file()
                 and (candidate / "opencompass").is_dir()
-                for candidate in candidates
-            ):
+            ), None)
+            if source_opencompass is None:
                 raise ModelCIError(
                     "the reviewed OpenCompass tree is missing below {}".format(
                         opencompass_root
                     )
                 )
+            runtime_opencompass_dir = copy_opencompass_tree(
+                source_opencompass, Path("/sandbox/opencompass-ci")
+            )
+            asset_manifest["opencompass"] = {
+                "source": str(source_opencompass),
+                "runtime_copy": str(runtime_opencompass_dir),
+            }
+            if "cmmlu" in required_checks:
+                asset_manifest["opencompass"]["cmmlu_adapter"] = (
+                    prepare_opencompass_conda_shim(
+                        tool_root, runtime_opencompass_dir
+                    )
+                )
+        dataset_root = Path(manifest["image_contract"]["dataset_dir"])
+        if "opencompass" in required_checks:
+            opencompass_dataset_root = Path(
+                manifest["image_contract"]["opencompass_dataset_dir"]
+            )
+            for dataset_name in ("humaneval", "gsm8k"):
+                dataset_path = opencompass_dataset_root / dataset_name
+                if not dataset_path.is_dir() or not next(dataset_path.rglob("*"), None):
+                    raise ModelCIError(
+                        "the reviewed {} dataset is missing below {}".format(
+                            dataset_name, dataset_path
+                        )
+                    )
         if "cmmlu" in required_checks:
-            cmmlu_root = Path(manifest["image_contract"]["cmmlu_dataset_dir"])
+            cmmlu_root = dataset_root / "cmmlu"
             if not cmmlu_root.is_dir() or not next(cmmlu_root.rglob("*.csv"), None):
                 raise ModelCIError(
                     "the reviewed CMMLU dataset is missing below {}".format(
@@ -709,6 +1276,7 @@ def cmd_run(args):
                     run["checks"],
                     repeat_index,
                     output_root,
+                    runtime_opencompass_dir,
                 )
             )
     write_junit(output_root / "reports" / "model-junit.xml", cases)
@@ -735,6 +1303,57 @@ def cmd_result_gate(args):
 def cmd_selftest(_args):
     with tempfile.TemporaryDirectory(prefix="lmcache-model-ci-") as temporary:
         root = Path(temporary)
+        duplicate_config = """[vllm]
+disable-cascade-attn = true
+trust-remote-code = true
+disable-cascade-attn = true
+"""
+        fixed_config = deduplicate_config_options(
+            duplicate_config, ["vllm.disable-cascade-attn"]
+        )
+        if fixed_config.count("disable-cascade-attn") != 1:
+            raise ModelCIError("the reviewed duplicate config option was not removed")
+        overridden_config = override_config_options(
+            "[vllm]\ngpu-memory-utilization = 0.85\n",
+            {"vllm.gpu-memory-utilization": "0.20"},
+        )
+        if "gpu-memory-utilization = 0.20" not in overridden_config:
+            raise ModelCIError("the reviewed config option override was not applied")
+        opencompass_source = root / "opencompass-source"
+        (opencompass_source / "opencompass").mkdir(parents=True)
+        (opencompass_source / "run.py").write_text("# test\n", encoding="utf-8")
+        (opencompass_source / "opencompass" / "__init__.py").write_text(
+            "", encoding="utf-8"
+        )
+        (opencompass_source / "tmp").mkdir()
+        opencompass_copy = copy_opencompass_tree(
+            opencompass_source, root / "opencompass-copy"
+        )
+        if not (opencompass_copy / "tmp").is_dir():
+            raise ModelCIError("the writable OpenCompass tree was not prepared")
+        tool_root = root / "tool"
+        tool_root.mkdir()
+        adapter = prepare_opencompass_conda_shim(tool_root, opencompass_copy)
+        shim = Path(adapter["path"])
+        version = subprocess.check_output(
+            [str(shim), "--version"], universal_newlines=True
+        ).strip()
+        if version != "conda 0.0-lmcache-ci":
+            raise ModelCIError("the offline CMMLU adapter version probe failed")
+        import_probe = subprocess.check_output(
+            [
+                str(shim),
+                "run",
+                "-n",
+                "opencompassenv",
+                "python",
+                "-c",
+                "import opencompass; print(opencompass.__file__)",
+            ],
+            universal_newlines=True,
+        ).strip()
+        if not import_probe.startswith(str(opencompass_copy)):
+            raise ModelCIError("the offline CMMLU adapter used the wrong tree")
         command_log = io.StringIO()
         action_log = io.StringIO()
         with contextlib.redirect_stdout(action_log):
@@ -750,6 +1369,63 @@ def cmd_selftest(_args):
             raise ModelCIError("model command output was not archived")
         if "model-stream-marker" not in action_log.getvalue():
             raise ModelCIError("model command output was not streamed")
+        timeout_manifest = {
+            "timeouts": {
+                "start_model_seconds": 3600,
+                "start_api_seconds": 300,
+                "long_doc_seconds": 1800,
+            }
+        }
+        startup_commands, _, _ = scenario_commands(
+            timeout_manifest,
+            root,
+            root / "model.conf",
+            ["long_doc"],
+            root / "results",
+            root / "logs",
+            root / "work",
+            None,
+            {"long_doc_options": {"output_len": 16}},
+        )
+        startup_command = next(
+            command for name, command, _ in startup_commands if name == "start-model"
+        )
+        if startup_command[-2:] != ["--api_timeout", "300"]:
+            raise ModelCIError("the reviewed model startup request timeout was not applied")
+        long_doc_command = next(
+            command for name, command, _ in startup_commands if name == "long-doc"
+        )
+        if long_doc_command[-2:] != ["--output-len", "16"]:
+            raise ModelCIError("the reviewed long-document output length was not applied")
+        retry_tool = root / "retry-tool"
+        retry_log = retry_tool / "lmcache_test" / "logs" / "model.log"
+        retry_log.parent.mkdir(parents=True)
+        retry_log.write_text(
+            "RPC call to sample_tokens timed out\n"
+            "EngineDeadError: EngineCore encountered an issue\n",
+            encoding="utf-8",
+        )
+        retry_result = root / "retry-result.json"
+        write_json(
+            retry_result,
+            [
+                {
+                    "step_name": "start_model_vllm",
+                    "result": "failed",
+                    "model_log_file_path": str(retry_log),
+                }
+            ],
+        )
+        if not retryable_start_failure(retry_result, retry_tool):
+            raise ModelCIError("the reviewed cold-start failure was not retried")
+        retry_log.write_text(
+            "RPC call to sample_tokens timed out\n"
+            "EngineDeadError: EngineCore encountered an issue\n"
+            "HIP out of memory\n",
+            encoding="utf-8",
+        )
+        if retryable_start_failure(retry_result, retry_tool):
+            raise ModelCIError("an out-of-memory startup failure was marked retryable")
         failed = root / "failed.json"
         write_json(failed, [{"step_name": "long_doc", "result": "failed"}])
         try:
@@ -772,6 +1448,49 @@ def cmd_selftest(_args):
         passed = root / "passed.json"
         write_json(passed, [complete_long_doc])
         validate_result_records(passed, ["long_doc"])
+        cpu_long_doc = {
+            "step_name": "long_doc",
+            "result": "failed",
+            "long_doc_qa_tput_result": False,
+            "long_doc_qa_result": {
+                "warmup_round_mean_TTFT_seconds": 12.0,
+                "query_round_mean_TTFT_seconds": 3.0,
+                "warmup_round_prompt_count": 4,
+                "warmup_round_successful_prompt_count": 4,
+                "query_round_prompt_count": 4,
+                "query_round_successful_prompt_count": 4,
+            },
+            "lmcache_log_stats": {
+                "stored_count": 8,
+                "retrieve_count": 4,
+                "need_to_load_count": 4,
+            },
+            "offload_path_sizes": {},
+        }
+        cpu_passed = root / "cpu-passed.json"
+        write_json(cpu_passed, [cpu_long_doc])
+        validate_result_records(
+            cpu_passed,
+            ["long_doc"],
+            long_doc_validation="cpu_memory",
+            expected_long_doc_prompts=4,
+        )
+        cpu_no_hit = dict(cpu_long_doc)
+        cpu_no_hit["lmcache_log_stats"] = dict(cpu_long_doc["lmcache_log_stats"])
+        cpu_no_hit["lmcache_log_stats"]["retrieve_count"] = 0
+        cpu_failed = root / "cpu-failed.json"
+        write_json(cpu_failed, [cpu_no_hit])
+        try:
+            validate_result_records(
+                cpu_failed,
+                ["long_doc"],
+                long_doc_validation="cpu_memory",
+                expected_long_doc_prompts=4,
+            )
+        except ModelCIError:
+            pass
+        else:
+            raise ModelCIError("a CPU long-document result without hits was accepted")
         partial = root / "partial.json"
         partial_long_doc = dict(complete_long_doc)
         partial_long_doc["long_doc_qa_result"] = dict(complete_long_doc["long_doc_qa_result"])
