@@ -103,8 +103,8 @@ def selected_runs(manifest, profile):
 def validate_manifest(manifest):
     if manifest.get("schema_version") != 1:
         raise ModelCIError("unsupported model manifest schema")
-    if manifest.get("runner") != "nmz4":
-        raise ModelCIError("the first CI release is restricted to the nmz4 runner")
+    if manifest.get("runners") != ["nmz1", "nmz2", "nmz3", "nmz4", "nmz5"]:
+        raise ModelCIError("the reviewed organization runner set must be nmz1 through nmz5")
     tool = manifest.get("tool")
     if not isinstance(tool, dict) or not COMMIT.match(str(tool.get("commit", ""))):
         raise ModelCIError("the test tool must be pinned to a 40-character commit")
@@ -284,7 +284,7 @@ def selected_models(manifest, profile):
 def cmd_validate(args):
     manifest = load_manifest(args.manifest)
     profile = profile_config(manifest, args.profile)
-    if args.runner != manifest["runner"]:
+    if args.runner not in manifest["runners"]:
         raise ModelCIError("profile is not assigned to runner {}".format(args.runner))
     if args.visible_devices != profile["visible_devices"]:
         raise ModelCIError(

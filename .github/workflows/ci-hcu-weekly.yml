@@ -29,6 +29,7 @@ jobs:
       model_profile: framework
       job_role: framework
       job_key: framework
+      runner_kind: nmz1
       visible_devices: "0"
       repeat: "1"
       timeout_minutes: 90
@@ -40,27 +41,33 @@ jobs:
     needs: framework
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 5
       matrix:
         include:
           - job_key: qwen-cpu
             model_profile: weekly-qwen-cpu
             visible_devices: "0,1"
+            runner_kind: nmz1
           - job_key: qwen-localdisk
             model_profile: weekly-qwen-localdisk
             visible_devices: "0,1"
+            runner_kind: nmz2
           - job_key: qwen-posix
             model_profile: weekly-qwen-posix
             visible_devices: "0,1"
+            runner_kind: nmz3
           - job_key: deepseek-cpu
             model_profile: weekly-deepseek-cpu
             visible_devices: "0,1,2,3,4,5,6,7"
+            runner_kind: nmz4
           - job_key: deepseek-localdisk
             model_profile: weekly-deepseek-localdisk
             visible_devices: "0,1,2,3,4,5,6,7"
+            runner_kind: nmz5
           - job_key: deepseek-posix
             model_profile: weekly-deepseek-posix
             visible_devices: "0,1,2,3,4,5,6,7"
+            runner_kind: nmz1
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
       controller_ref: ${{ github.sha }}
@@ -70,6 +77,7 @@ jobs:
       model_profile: ${{ matrix.model_profile }}
       job_role: model
       job_key: ${{ matrix.job_key }}
+      runner_kind: ${{ matrix.runner_kind }}
       visible_devices: ${{ matrix.visible_devices }}
       repeat: "1"
       timeout_minutes: 360
@@ -85,7 +93,7 @@ jobs:
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
-    runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
+    runs-on: [self-hosted, Linux, X64, ci, bw1100, nmz1]
     timeout-minutes: 10
     steps:
       - name: Checkout trusted aggregate controller

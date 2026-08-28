@@ -693,7 +693,7 @@ def validate_success(
         if int(test_summary.get("expected_total", -1)) != expected * repeat:
             problems.append("container aggregate total count differs from trusted expectation")
     model_manifest = read_json(model_manifest_path)
-    if model_manifest.get("runner") != runner_kind:
+    if runner_kind not in model_manifest.get("runners", []):
         problems.append("model manifest runner differs from the workflow runner")
     profile = resolved_model_profile(model_manifest, model_profile)
     model_expected_ids = []

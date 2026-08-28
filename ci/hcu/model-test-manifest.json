@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "runner": "nmz4",
+  "runners": ["nmz1", "nmz2", "nmz3", "nmz4", "nmz5"],
   "tool": {
     "archive": "/ci_public/lmcache-das/assets/test-tool/lmcache_test_tool-b01d189144ebbf37f3f1bfafe7ea4452dba6053f.tar",
     "archive_sha256": "66401598f4f5936cf88c27dca500356788156fbe8ca972009e868ae69b7faa9e",

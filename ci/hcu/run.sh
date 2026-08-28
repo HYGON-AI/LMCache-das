@@ -12,7 +12,7 @@ readonly PROFILE="${HCU_CI_PROFILE:-pr}"
 readonly MODEL_PROFILE="${HCU_CI_MODEL_PROFILE:-${PROFILE}}"
 readonly JOB_ROLE="${HCU_CI_JOB_ROLE:-framework}"
 readonly JOB_KEY="${HCU_CI_JOB_KEY:-framework}"
-readonly RUNNER_KIND="${HCU_CI_RUNNER_KIND:-nmz4}"
+readonly RUNNER_KIND="${HCU_CI_RUNNER_KIND:-nmz1}"
 readonly REPEAT="${HCU_CI_REPEAT:-1}"
 readonly RUN_ID="${HCU_CI_RUN_ID:-local-$(date -u +%Y%m%d%H%M%S)}"
 readonly ATTEMPT="${HCU_CI_ATTEMPT:-1}"
@@ -24,7 +24,7 @@ readonly UPSTREAM_ASSET="${HCU_CI_UPSTREAM_SOURCE:-/ci_public/lmcache-das/assets
 readonly MODEL_MANIFEST="${CONTROLLER_ROOT}/ci/hcu/model-test-manifest.json"
 readonly MODEL_HELPER="${CONTROLLER_ROOT}/ci/hcu/model-ci.py"
 readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
-readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock}"
+readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock}"
 readonly CACHE_ROOT="${HCU_CI_CACHE_ROOT:-}"
 readonly RUNNER_TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
 readonly CONTAINER_MEMORY="${HCU_CI_CONTAINER_MEMORY:-56g}"
@@ -332,6 +332,7 @@ host_preflight() {
     [[ "${CONTAINER_CPUS}" =~ ^[1-9][0-9]*$ ]]
     [[ "${OUTPUT_LIMIT}" =~ ^[1-9][0-9]*[gGmM]$ ]]
     [[ "${PHASE_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]{2,5}$ ]]
+    [[ "${RUNNER_KIND}" =~ ^nmz[1-5]$ ]]
     [[ "${JOB_ROLE}" == "framework" || "${JOB_ROLE}" == "model" ]]
     if [[ "${JOB_ROLE}" == "framework" ]]; then
         [[ "${JOB_KEY}" == "framework" && "${MODEL_PROFILE}" == "framework" ]]
@@ -353,7 +354,7 @@ host_preflight() {
     model_mount_arguments >/dev/null
     verify_prebuilt_wheel
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
-    [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/"* ]]
+    [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock" ]]
     mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
     if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
         [[ "${BASE_IMAGE}" == *@sha256:* ]]
@@ -380,7 +381,7 @@ validate_configuration() {
 }
 
 start_gpu_lease() {
-    # Keep the dedicated nmz4 runner exclusive for the complete Actions job. A
+    # Keep the selected organization runner exclusive for the complete Actions job. A
     # normal shell fd would be released between workflow steps.
     nohup python3 "${HOST_HELPER}" hold-lock \
         --lock "${RUNNER_LOCK}" \
