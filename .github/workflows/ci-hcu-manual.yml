@@ -20,6 +20,12 @@ on:
         default: framework
         type: choice
         options: [framework, qwen-smoke, weekly-bw1100, full]
+      runner:
+        description: Organization runner; auto uses the reviewed multi-node assignment
+        required: true
+        default: auto
+        type: choice
+        options: [auto, nmz1, nmz2, nmz3, nmz4, nmz5]
 
 permissions:
   contents: read
@@ -45,6 +51,7 @@ jobs:
       model_profile: framework
       job_role: framework
       job_key: framework
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz1' || inputs.runner }}
       visible_devices: "0"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 180
@@ -64,6 +71,7 @@ jobs:
       model_profile: weekly-qwen-cpu
       job_role: model
       job_key: qwen-cpu
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz1' || inputs.runner }}
       visible_devices: "0,1"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 360
@@ -83,6 +91,7 @@ jobs:
       model_profile: ${{ inputs.profile == 'qwen-smoke' && 'pr-qwen-localdisk' || 'weekly-qwen-localdisk' }}
       job_role: model
       job_key: qwen-localdisk
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz2' || inputs.runner }}
       visible_devices: "0,1"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 360
@@ -102,6 +111,7 @@ jobs:
       model_profile: ${{ inputs.profile == 'qwen-smoke' && 'pr-qwen-posix' || 'weekly-qwen-posix' }}
       job_role: model
       job_key: qwen-posix
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz3' || inputs.runner }}
       visible_devices: "0,1"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 360
@@ -121,6 +131,7 @@ jobs:
       model_profile: weekly-deepseek-cpu
       job_role: model
       job_key: deepseek-cpu
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz4' || inputs.runner }}
       visible_devices: "0,1,2,3,4,5,6,7"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 360
@@ -140,6 +151,7 @@ jobs:
       model_profile: weekly-deepseek-localdisk
       job_role: model
       job_key: deepseek-localdisk
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz5' || inputs.runner }}
       visible_devices: "0,1,2,3,4,5,6,7"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 360
@@ -159,6 +171,7 @@ jobs:
       model_profile: weekly-deepseek-posix
       job_role: model
       job_key: deepseek-posix
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz1' || inputs.runner }}
       visible_devices: "0,1,2,3,4,5,6,7"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 360
@@ -181,7 +194,7 @@ jobs:
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
-    runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
+    runs-on: [self-hosted, Linux, X64, ci, bw1100, nmz1]
     timeout-minutes: 10
     steps:
       - name: Checkout trusted aggregate controller

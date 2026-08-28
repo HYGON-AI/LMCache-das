@@ -1,9 +1,12 @@
 self-hosted-runner:
   labels:
-    - hcu
-    - hcu-ci-pr
+    - ci
     - bw1100
+    - nmz1
+    - nmz2
+    - nmz3
     - nmz4
+    - nmz5
 
 config-variables:
   - LMCACHE_HCU_CI_ENABLED
@@ -11,4 +14,8 @@ config-variables:
   - LMCACHE_HCU_BASE_IMAGE
   - LMCACHE_HCU_BASE_IMAGE_ID
   - LMCACHE_HCU_ARCH
+  - LMCACHE_HCU_CACHE_ROOT_NMZ1
+  - LMCACHE_HCU_CACHE_ROOT_NMZ2
+  - LMCACHE_HCU_CACHE_ROOT_NMZ3
   - LMCACHE_HCU_CACHE_ROOT_NMZ4
+  - LMCACHE_HCU_CACHE_ROOT_NMZ5

@@ -24,15 +24,16 @@ bash -n "${SCRIPT_DIR}/run-tests.sh"
 python3 "${SCRIPT_DIR}/host.py" selftest
 python3 "${SCRIPT_DIR}/model-ci.py" selftest
 python3 "${SCRIPT_DIR}/aggregate-jobs.py" --selftest
-python3 "${SCRIPT_DIR}/model-ci.py" validate \
-    --manifest "${SCRIPT_DIR}/model-test-manifest.json" \
-    --profile pr --runner nmz4 --visible-devices 0,1 >/dev/null
-while IFS='|' read -r profile devices; do
+for runner in nmz1 nmz2 nmz3 nmz4 nmz5; do
     python3 "${SCRIPT_DIR}/model-ci.py" validate \
         --manifest "${SCRIPT_DIR}/model-test-manifest.json" \
-        --profile "${profile}" --runner nmz4 \
-        --visible-devices "${devices}" >/dev/null
-done <<'EOF'
+        --profile pr --runner "${runner}" --visible-devices 0,1 >/dev/null
+    while IFS='|' read -r profile devices; do
+        python3 "${SCRIPT_DIR}/model-ci.py" validate \
+            --manifest "${SCRIPT_DIR}/model-test-manifest.json" \
+            --profile "${profile}" --runner "${runner}" \
+            --visible-devices "${devices}" >/dev/null
+    done <<'EOF'
 framework|0
 pr-qwen-localdisk|0,1
 pr-qwen-posix|0,1
@@ -43,6 +44,7 @@ weekly-deepseek-cpu|0,1,2,3,4,5,6,7
 weekly-deepseek-localdisk|0,1,2,3,4,5,6,7
 weekly-deepseek-posix|0,1,2,3,4,5,6,7
 EOF
+done
 
 STATE_FILE="${SELFTEST_CACHE}/state/state.json"
 STATUS_SHA="$(printf clean | sha256sum | awk '{print $1}')"
