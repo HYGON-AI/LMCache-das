@@ -207,7 +207,7 @@ model_tests_required() {
 
 verify_prebuilt_wheel() {
     [[ "${JOB_ROLE}" == "model" ]] || return 0
-    local framework_root
+    local framework_root staged_root staged_wheel
     framework_root="$(dirname "${PREBUILT_WHEEL_ROOT}")"
     [[ "$(readlink -m -- "${framework_root}")" == \
         "${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework" ]]
@@ -228,6 +228,19 @@ PY
     mapfile -t wheels < <(find "${PREBUILT_WHEEL_ROOT}" -maxdepth 1 \
         -type f -name '*.whl' -print | LC_ALL=C sort)
     (( ${#wheels[@]} == 1 ))
+
+    # The shared archive is intentionally published with private directory
+    # permissions. A root-squashed container cannot traverse that tree even
+    # through a read-only bind mount, so expose only the verified wheel from a
+    # per-job trusted staging directory instead of relaxing archive permissions.
+    staged_root="${TRUSTED_STATE_ROOT}/prebuilt-wheel"
+    [[ ! -L "${staged_root}" ]]
+    install -d -m 0755 -- "${staged_root}"
+    staged_wheel="${staged_root}/$(basename "${wheels[0]}")"
+    install -m 0444 -- "${wheels[0]}" "${staged_wheel}"
+    [[ "$(sha256sum "${staged_wheel}" | awk '{print $1}')" == \
+        "$(sha256sum "${wheels[0]}" | awk '{print $1}')" ]]
+    PREBUILT_WHEEL_ROOT="${staged_root}"
 }
 
 visible_device_count() {

@@ -1,0 +1,4 @@
+save_decode_cache: false
+save_unfull_chunk: false
+lookup_timeout_ms: 3000
+remote_serde: naive
