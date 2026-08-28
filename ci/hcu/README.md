@@ -30,16 +30,16 @@ used and model jobs never rebuild the package.
 
 PR therefore has four visible jobs: framework, Qwen LocalDisk, Qwen POSIX and
 the required `hcu-tests` summary. Weekly has eight visible jobs: framework,
-six Qwen/DeepSeek scenario jobs and `weekly-summary`. The single nmz4 runner
-executes model jobs serially, but each has an independent timeout and an
-independent client/server log stream.
+six Qwen/DeepSeek scenario jobs and `weekly-summary`. Jobs are routed across
+five organization runners, while each scenario retains an independent timeout
+and an independent client/server log stream.
 
 The trusted controller comes from the protected target branch. The selected PR
 merge or manual revision is mounted read-only into a restricted container. A
 disposable source copy is used for wheel construction; the original checkout
 is never built in place.
 
-The fixed test-tool tar archive is read from the nmz4 `/ci_public` asset tree.
+The fixed test-tool tar archive is read from the shared `/ci_public` asset tree.
 The trusted host verifies its SHA256, rejects unsafe archive entries, verifies
 the embedded Git commit and creates a clean detached checkout. No network
 credential is required or passed to the test container. The CI never follows a
@@ -53,11 +53,14 @@ patch cleanup and checksums before publishing `READY` last.
 
 ## Runner and profiles
 
-All HCU workflows use only this registered runner:
+All HCU workflows use the organization runner pool below:
 
 ```text
-nmz4-hygon-hcu-lmcache
-self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4
+10.17.1.1  ci-nmz1  self-hosted, Linux, X64, ci, bw1100, nmz1
+10.17.1.2  ci-nmz2  self-hosted, Linux, X64, ci, bw1100, nmz2
+10.17.1.3  ci-nmz3  self-hosted, Linux, X64, ci, bw1100, nmz3
+10.17.1.4  ci-nmz4  self-hosted, Linux, X64, ci, bw1100, nmz4
+10.17.1.5  ci-nmz5  self-hosted, Linux, X64, ci, bw1100, nmz5
 ```
 
 Profiles:
@@ -70,9 +73,17 @@ Profiles:
   job; Qwen jobs expose two devices and DeepSeek jobs expose eight.
 - `full`: alias of `weekly-bw1100` for manual dispatch.
 
-The runner lock is held for each complete execution unit. The nmz4 runner has a
-single worker and model jobs use `max-parallel: 1`, so split jobs cannot overlap
-or reuse cards while another scenario is active.
+PR assigns framework, LocalDisk and POSIX to nmz1, nmz2 and nmz3. Weekly uses
+all five nodes with at most five model jobs in parallel; two jobs assigned to
+nmz1 are serialized by its single organization Runner listener. Manual runs
+accept `runner=auto|nmz1|nmz2|nmz3|nmz4|nmz5`: `auto` uses the reviewed mapping,
+while a named runner forces all selected jobs onto that node for diagnostics.
+Each job also holds a node-specific host lock for its complete execution unit.
+The organization Runner Group must grant this repository access. Each physical
+node must run only its `ci-nmzN` organization listener; legacy repository-level
+Runner services must be stopped before `LMCACHE_HCU_RUNNER_ISOLATED=true` is
+enabled, otherwise another repository can still bypass this scheduler and use
+the same cards.
 
 ## Configuration
 
@@ -88,15 +99,19 @@ Required repository variables:
 ```text
 LMCACHE_HCU_BASE_IMAGE=<reviewed image tag or registry digest>
 LMCACHE_HCU_BASE_IMAGE_ID=sha256:<immutable local image ID>
+LMCACHE_HCU_CACHE_ROOT_NMZ1=<dedicated path containing /lmcache-das/>
+LMCACHE_HCU_CACHE_ROOT_NMZ2=<dedicated path containing /lmcache-das/>
+LMCACHE_HCU_CACHE_ROOT_NMZ3=<dedicated path containing /lmcache-das/>
 LMCACHE_HCU_CACHE_ROOT_NMZ4=<dedicated path containing /lmcache-das/>
+LMCACHE_HCU_CACHE_ROOT_NMZ5=<dedicated path containing /lmcache-das/>
 LMCACHE_HCU_ARCH=<optional expected architecture reported by the image>
 ```
 
 Registry images should use an `@sha256:` digest. A reviewed image imported
 from a tar archive may use its tag, but the immutable Docker image ID remains
-mandatory and is checked before any container starts. The initial nmz4 image
-baseline is Python 3.10, Torch 2.9.0, vLLM 0.15.1, DTK 26.04, ABI 1 and
-`gfx938`.
+mandatory and is checked before any container starts. The same image ID must
+be loaded on every selected runner. The initial image baseline is Python 3.10,
+Torch 2.9.0, vLLM 0.15.1, DTK 26.04, ABI 1 and `gfx938`.
 
 The initial tar image contains reviewed, pre-existing `pip check` conflicts.
 The wheel gate records `pip check` before and after installing the current
@@ -122,7 +137,7 @@ test-tool copy. It accepts the exact version, Python-import and OpenCompass
 commands used by that launcher and forwards them to the current CI interpreter
 and `/sandbox/opencompass-ci`; it neither downloads packages nor changes the
 read-only test-tool asset.
-The nmz4 evaluation datasets at
+The evaluation datasets available to every runner at
 `/public/opendas/DL_DATA/opencompass_data` are mounted read-only at the
 OpenCompass compatibility path `/public/ai_data/datasets/data`; its CMMLU
 subdirectory is independently mounted read-only at
@@ -149,7 +164,7 @@ The fixed upstream source is read from:
 /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111/
 ```
 
-Each run creates only one cache subtree below the configured nmz4 root. The
+Each run creates only one cache subtree below its selected runner's cache root. The
 controller probes CPU, LocalDisk, SSD and POSIX subdirectories with direct I/O,
 mounts them as `/mnt/fs1`, `/local_disk`, `/ssd` and
 `/mnt/parastor_storage`, and removes only the current run subtree after the
@@ -226,8 +241,8 @@ bash ci/hcu/selftest.sh
 git diff --check
 ```
 
-Full wheel and model execution additionally require the reviewed image, nmz4
-cache root, model assets and fixed local test-tool archive. The implementation does
+Full wheel and model execution additionally require the reviewed image on the
+selected runner, its cache root, model assets and fixed local test-tool archive. The implementation does
 not weaken a failed compatibility, packaging, patch, pytest or model gate.
 
 The pinned LMCache v0.3.13 server fixture assumes that its CPU server becomes

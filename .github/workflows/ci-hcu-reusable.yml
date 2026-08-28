@@ -25,6 +25,9 @@ on:
       job_key:
         required: true
         type: string
+      runner_kind:
+        required: true
+        type: string
       visible_devices:
         required: true
         type: string
@@ -68,7 +71,13 @@ jobs:
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
-    runs-on: [self-hosted, Linux, X64, hcu, hcu-ci-pr, bw1100, nmz4]
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - ci
+      - bw1100
+      - ${{ inputs.runner_kind }}
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
       source_sha: ${{ steps.revision.outputs.source_sha }}
@@ -77,7 +86,7 @@ jobs:
       HCU_CI_MODEL_PROFILE: ${{ inputs.model_profile }}
       HCU_CI_JOB_ROLE: ${{ inputs.job_role }}
       HCU_CI_JOB_KEY: ${{ inputs.job_key }}
-      HCU_CI_RUNNER_KIND: nmz4
+      HCU_CI_RUNNER_KIND: ${{ inputs.runner_kind }}
       HCU_CI_REPEAT: ${{ inputs.repeat }}
       HCU_CI_BASE_IMAGE: ${{ vars.LMCACHE_HCU_BASE_IMAGE }}
       HCU_CI_BASE_IMAGE_ID: ${{ vars.LMCACHE_HCU_BASE_IMAGE_ID }}
@@ -85,8 +94,16 @@ jobs:
       HCU_CI_SHARED_ROOT: /ci_public/lmcache-das
       HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111
       HCU_CI_VISIBLE_DEVICES: ${{ inputs.visible_devices }}
-      HCU_CI_RUNNER_LOCK: /tmp/hcu-ci-gpu-locks/nmz4-hygon-hcu-lmcache.lock
-      HCU_CI_CACHE_ROOT: ${{ vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 }}
+      HCU_CI_RUNNER_LOCK: ${{ format('/tmp/hcu-ci-gpu-locks/{0}-organization-hcu.lock', inputs.runner_kind) }}
+      HCU_CI_CACHE_ROOT: >-
+        ${{
+          inputs.runner_kind == 'nmz1' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ1 ||
+          inputs.runner_kind == 'nmz2' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ2 ||
+          inputs.runner_kind == 'nmz3' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ3 ||
+          inputs.runner_kind == 'nmz4' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 ||
+          inputs.runner_kind == 'nmz5' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ5 ||
+          ''
+        }}
       HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
       HCU_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
       HCU_CI_EXPECTED_BASE_SHA: ${{ inputs.expected_base_sha }}
