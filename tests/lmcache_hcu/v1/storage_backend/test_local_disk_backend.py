@@ -28,6 +28,14 @@ class _Lock:
     def release(self):
         self.calls.append("release")
 
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.release()
+        return False
+
 
 def test_get_blocking_preserves_cached_positions_on_loaded_memory():
     """get_blocking should copy disk metadata cached_positions to the memory object."""
@@ -118,6 +126,7 @@ def test_read_file_removes_stale_metadata_when_file_is_missing(tmp_path):
     backend = SimpleNamespace(
         os_disk_bs=4096,
         use_odirect=False,
+        disk_lock=_Lock(),
         dict={key: SimpleNamespace(path=str(missing_path))},
     )
 
