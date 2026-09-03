@@ -405,6 +405,10 @@ def _patch_vllm_v1_adapter():
     lmc_vllm_v1_adapter.LMCacheConnectorV1Impl._build_kv_layer_groups = _hcu_lmcache_connector_build_kv_layer_groups
     _hcu_patch_request_tracker_update(lmc_vllm_v1_adapter)
     _hcu_patch_reqmeta_recompute_boundary(lmc_vllm_v1_adapter)
+    from lmcache_hcu.integration.vllm._hcu_wait_for_save_patch import (
+        patch_wait_for_save,
+    )
+    patch_wait_for_save(lmc_vllm_v1_adapter)
 
 
 def _hcu_hash_tokens(
