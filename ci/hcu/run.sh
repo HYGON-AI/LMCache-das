@@ -81,6 +81,20 @@ ensure_within() {
     [[ "${resolved_path}" == "${resolved_parent}/"* ]]
 }
 
+bind_mount_arguments() {
+    local host_path="$1" container_path="$2" access="$3" resolved_host
+    [[ "${host_path}" == /* && "${container_path}" == /* ]]
+    [[ "${access}" == "ro" || "${access}" == "rw" ]]
+    [[ "${host_path}" != *:* && "${container_path}" != *:* ]]
+    [[ -e "${host_path}" ]]
+    resolved_host="$(readlink -e -- "${host_path}")"
+    [[ -n "${resolved_host}" && -d "${resolved_host}" && "${resolved_host}" != *:* ]]
+    # The organization Docker wrapper rejects bind mounts expressed with
+    # --mount, but accepts the equivalent validated -v form. Emit each token
+    # separately so callers can consume it into an array without word splitting.
+    printf '%s\0' -v "${resolved_host}:${container_path}:${access}"
+}
+
 resolve_context() {
     SOURCE_SHA="$(git -C "${CHECKOUT_ROOT}" rev-parse HEAD)"
     CONTROLLER_SHA="$(git -C "${CONTROLLER_ROOT}" rev-parse HEAD)"
@@ -211,8 +225,19 @@ verify_prebuilt_wheel() {
     framework_root="$(dirname "${PREBUILT_WHEEL_ROOT}")"
     [[ "$(readlink -m -- "${framework_root}")" == \
         "${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework" ]]
-    [[ -f "${framework_root}/READY" && -f "${framework_root}/SHA256SUMS" ]]
-    [[ -f "${framework_root}/manifest.json" ]]
+    if [[ ! -x "${framework_root}" || ! -r "${framework_root}" ]]; then
+        printf 'Framework archive is not traversable/readable: %s\n' "${framework_root}" >&2
+        stat -c 'mode=%A uid=%u gid=%g path=%n' "${framework_root}" >&2 || true
+        return 3
+    fi
+    for required in READY SHA256SUMS manifest.json; do
+        if [[ ! -r "${framework_root}/${required}" ]]; then
+            printf 'Framework archive is missing an accessible %s: %s\n' \
+                "${required}" "${framework_root}/${required}" >&2
+            stat -c 'mode=%A uid=%u gid=%g path=%n' "${framework_root}" >&2 || true
+            return 3
+        fi
+    done
     python3 - "${framework_root}/manifest.json" "${SOURCE_SHA}" <<'PY'
 import json
 import sys
@@ -229,10 +254,9 @@ PY
         -type f -name '*.whl' -print | LC_ALL=C sort)
     (( ${#wheels[@]} == 1 ))
 
-    # The shared archive is intentionally published with private directory
-    # permissions. A root-squashed container cannot traverse that tree even
-    # through a read-only bind mount, so expose only the verified wheel from a
-    # per-job trusted staging directory instead of relaxing archive permissions.
+    # Expose only the verified wheel from a per-job trusted staging directory.
+    # The shared archive is group-readable across organization runners, but it
+    # is never mounted into an untrusted test container.
     staged_root="${TRUSTED_STATE_ROOT}/prebuilt-wheel"
     [[ ! -L "${staged_root}" ]]
     install -d -m 0755 -- "${staged_root}"
@@ -290,7 +314,7 @@ model_mount_arguments() {
             return 3
         fi
         [[ -d "${host_path}" && ! -L "${host_path}" ]]
-        printf '%s\0' --mount "type=bind,src=${host_path},dst=${container_path},readonly"
+        bind_mount_arguments "${host_path}" "${container_path}" ro
     done < <(python3 "${MODEL_HELPER}" mounts \
         --manifest "${MODEL_MANIFEST}" --profile "${MODEL_PROFILE}")
 }
@@ -368,10 +392,15 @@ host_preflight() {
 }
 
 validate_configuration() {
+    local -a bind_args=()
+    local value
+    while IFS= read -r -d '' value; do bind_args+=("${value}"); done < <(
+        bind_mount_arguments "${CONTROLLER_ROOT}" /opt/ci ro
+        bind_mount_arguments "${CHECKOUT_ROOT}" /input/source ro
+        bind_mount_arguments "${UPSTREAM_ASSET}" /input/upstream ro
+    )
     docker run --rm --network none --entrypoint python3 \
-        --mount "type=bind,src=${CONTROLLER_ROOT},dst=/opt/ci,readonly" \
-        --mount "type=bind,src=${CHECKOUT_ROOT},dst=/input/source,readonly" \
-        --mount "type=bind,src=${UPSTREAM_ASSET},dst=/input/upstream,readonly" \
+        "${bind_args[@]}" \
         "${BASE_IMAGE}" /opt/ci/ci/hcu/ci.py validate \
             --compatibility /opt/ci/ci/hcu/compatibility.json \
             --patch-manifest /opt/ci/ci/hcu/patch-manifest.json \
@@ -427,22 +456,28 @@ verify_resources() {
 }
 
 start_test_container() {
-    local -a resource_args=() model_args=() optional_mounts=()
+    local -a resource_args=() model_args=() optional_mounts=() base_mounts=()
     local value network_name="none"
     while IFS= read -r -d '' value; do resource_args+=("${value}"); done < <(device_and_group_arguments)
     while IFS= read -r -d '' value; do model_args+=("${value}"); done < <(model_mount_arguments)
     if model_tests_required; then
         [[ -d "${TEST_TOOL_ROOT}/.git" && -d "${CACHE_RUN_ROOT}" ]]
         network_name="${NETWORK_NAME}"
-        optional_mounts+=(
-            --mount "type=bind,src=${TEST_TOOL_ROOT},dst=/input/test-tool,readonly"
-            --mount "type=bind,src=${CACHE_RUN_ROOT}/cpu,dst=/mnt/fs1"
-            --mount "type=bind,src=${CACHE_RUN_ROOT}/localdisk,dst=/local_disk"
-            --mount "type=bind,src=${CACHE_RUN_ROOT}/ssd,dst=/ssd"
-            --mount "type=bind,src=${CACHE_RUN_ROOT}/posix,dst=/mnt/parastor_storage"
-            --mount "type=bind,src=${PREBUILT_WHEEL_ROOT},dst=/input/prebuilt-wheel,readonly"
+        while IFS= read -r -d '' value; do optional_mounts+=("${value}"); done < <(
+            bind_mount_arguments "${TEST_TOOL_ROOT}" /input/test-tool ro
+            bind_mount_arguments "${CACHE_RUN_ROOT}/cpu" /mnt/fs1 rw
+            bind_mount_arguments "${CACHE_RUN_ROOT}/localdisk" /local_disk rw
+            bind_mount_arguments "${CACHE_RUN_ROOT}/ssd" /ssd rw
+            bind_mount_arguments "${CACHE_RUN_ROOT}/posix" /mnt/parastor_storage rw
+            bind_mount_arguments "${PREBUILT_WHEEL_ROOT}" /input/prebuilt-wheel ro
         )
     fi
+    while IFS= read -r -d '' value; do base_mounts+=("${value}"); done < <(
+        bind_mount_arguments /opt/hyhal /opt/hyhal ro
+        bind_mount_arguments "${CONTROLLER_ROOT}" /opt/ci ro
+        bind_mount_arguments "${CHECKOUT_ROOT}" /input/source ro
+        bind_mount_arguments "${UPSTREAM_ASSET}" /input/upstream ro
+    )
     docker run -d --init --name "${CONTAINER_NAME}" \
         --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
         --network "${network_name}" --read-only --shm-size 32g \
@@ -455,10 +490,7 @@ start_test_container() {
         "${resource_args[@]}" \
         "${model_args[@]}" \
         "${optional_mounts[@]}" \
-        --mount "type=bind,src=/opt/hyhal,dst=/opt/hyhal,readonly" \
-        --mount "type=bind,src=${CONTROLLER_ROOT},dst=/opt/ci,readonly" \
-        --mount "type=bind,src=${CHECKOUT_ROOT},dst=/input/source,readonly" \
-        --mount "type=bind,src=${UPSTREAM_ASSET},dst=/input/upstream,readonly" \
+        "${base_mounts[@]}" \
         --env HIP_VISIBLE_DEVICES="${VISIBLE_DEVICES}" --env CUDA_VISIBLE_DEVICES="${VISIBLE_DEVICES}" \
         --env HCU_CI_EXPECTED_DEVICE_COUNT="$(visible_device_count)" \
         --env HCU_CI_PROFILE="${PROFILE}" --env HCU_CI_REPEAT="${REPEAT}" \
@@ -515,13 +547,18 @@ safe_import_output() {
     # bounded /output tmpfs through /proc/1/root. SYS_PTRACE is needed because
     # the target runs in a separate container; the helper has no network,
     # source checkout, HCU device, Docker socket, or shared-results mount.
+    local -a bind_args=()
+    local value
+    while IFS= read -r -d '' value; do bind_args+=("${value}"); done < <(
+        bind_mount_arguments "${CONTROLLER_ROOT}" /opt/ci ro
+        bind_mount_arguments "${TRUSTED_SPOOL}" /trusted rw
+    )
     docker run --rm --network none --read-only --entrypoint python3 \
         --pid "container:${CONTAINER_NAME}" \
         --cap-drop ALL --cap-add SYS_PTRACE --cap-add DAC_OVERRIDE \
         --cap-add CHOWN \
         --security-opt no-new-privileges \
-        --mount "type=bind,src=${CONTROLLER_ROOT},dst=/opt/ci,readonly" \
-        --mount "type=bind,src=${TRUSTED_SPOOL},dst=/trusted" \
+        "${bind_args[@]}" \
         "${BASE_IMAGE}" /opt/ci/ci/hcu/host.py safe-import \
             --source /proc/1/root/output --preserve-source-path --destination /trusted
 }
