@@ -28,6 +28,15 @@ The final summary job verifies all child manifests, checksums and completion
 markers before creating the run-level `READY` marker. No GitHub Artifact is
 used and model jobs never rebuild the package.
 
+All publication hierarchy directories use the runners' shared group with
+setgid group traversal/write permissions; child result directories are
+group-readable. This is required because organization runners can have
+different numeric user IDs while sharing the same `/ci_public` group and NFS
+tree. Test containers still receive only the verified staged wheel, never a
+writable `/ci_public` mount. Bind sources are canonicalized and validated
+before the controller passes them to the organization Docker wrapper using
+its supported `-v` syntax.
+
 PR therefore has four visible jobs: framework, Qwen LocalDisk, Qwen POSIX and
 the required `hcu-tests` summary. Weekly has eight visible jobs: framework,
 six Qwen/DeepSeek scenario jobs and `weekly-summary`. Jobs are routed across

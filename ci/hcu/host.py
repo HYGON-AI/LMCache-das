@@ -763,7 +763,8 @@ def copy_trusted_tree(source, destination):
         current = Path(directory)
         relative_dir = current.relative_to(source)
         target_dir = destination / relative_dir
-        target_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+        target_dir.mkdir(mode=0o2750, parents=True, exist_ok=True)
+        os.chmod(str(target_dir), 0o2750)
         for name in files:
             path = current / name
             info = os.lstat(str(path))
@@ -791,6 +792,7 @@ def write_checksums(root):
             )
         handle.flush()
         os.fsync(handle.fileno())
+    os.chmod(str(sums), 0o640)
     for line in sums.read_text(encoding="utf-8").splitlines():
         expected, relative = line.split("  ", 1)
         if sha256_file(root / relative) != expected:
@@ -822,6 +824,7 @@ def mark_publication_failed(location, message):
             handle.write(str(message) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(str(location / "PUBLICATION_FAILED"), 0o640)
         existing_sums = location / "SHA256SUMS"
         if existing_sums.exists():
             existing_sums.unlink()
@@ -831,6 +834,25 @@ def mark_publication_failed(location, message):
             "Unable to mark retained publication as failed: {}".format(exc),
             file=sys.stderr,
         )
+
+
+def prepare_shared_parent(shared_root, parts):
+    root_info = os.stat(str(shared_root))
+    available_groups = set(os.getgroups())
+    available_groups.add(os.getegid())
+    if root_info.st_gid not in available_groups:
+        raise HostError(
+            "Runner is not a member of shared archive group {}".format(root_info.st_gid)
+        )
+    current = shared_root
+    for part in parts:
+        current = current / part
+        current.mkdir(mode=0o2770, exist_ok=True)
+        info = os.lstat(str(current))
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise HostError("Unsafe shared archive directory: {}".format(current))
+        os.chmod(str(current), 0o2770)
+    return current
 
 
 def publish(spool, shared_root, profile, run_id, attempt, sha, job_key, run_key, cleanup_root):
@@ -846,14 +868,17 @@ def publish(spool, shared_root, profile, run_id, attempt, sha, job_key, run_key,
         (run_key, "run key"),
     ):
         ensure_token(value, label)
-    parent = shared_root / profile / run_id / attempt / sha
+    if not shared_root.is_dir() or shared_root.is_symlink():
+        raise HostError("Publication root must be a real directory")
+    parent = prepare_shared_parent(shared_root, (profile, run_id, attempt, sha))
     final = parent / job_key
     staging = parent / (".staging-" + run_key)
     if not is_within(final, shared_root) or not is_within(staging, shared_root):
         raise HostError("Publication path escaped the shared root")
     if final.exists() or staging.exists():
         raise HostError("Publication destination already exists: {}".format(final))
-    staging.mkdir(parents=True)
+    staging.mkdir(mode=0o2750)
+    os.chmod(str(staging), 0o2750)
     try:
         copy_trusted_tree(spool, staging)
         write_checksums(staging)
@@ -876,6 +901,7 @@ def publish(spool, shared_root, profile, run_id, attempt, sha, job_key, run_key,
             handle.write("complete\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(str(ready_tmp), 0o640)
         os.replace(str(ready_tmp), str(final / "READY"))
         fsync_directory(final)
         return final
@@ -1037,6 +1063,33 @@ def cmd_selftest(_args):
             pass
         else:
             raise HostError("Symlink output was not rejected")
+
+        shared = root / "shared"
+        shared.mkdir()
+        publication_parent = prepare_shared_parent(
+            shared, ("pr", "123", "1", "a" * 40)
+        )
+        published = publication_parent / "framework"
+        published.mkdir()
+        copy_trusted_tree(destination, published)
+        write_checksums(published)
+        ready = published / "READY"
+        ready.write_text("complete\n", encoding="utf-8")
+        os.chmod(str(ready), 0o640)
+        if os.name != "nt":
+            for item in (
+                shared / "pr",
+                shared / "pr" / "123",
+                shared / "pr" / "123" / "1",
+                publication_parent,
+            ):
+                if stat.S_IMODE(os.stat(str(item)).st_mode) != 0o2770:
+                    raise HostError("Shared parent mode self-test failed: {}".format(item))
+            if stat.S_IMODE(os.stat(str(published)).st_mode) != 0o2750:
+                raise HostError("Published directory mode self-test failed")
+            for item in (published / "reports" / "failure.xml", published / "SHA256SUMS", ready):
+                if stat.S_IMODE(os.stat(str(item)).st_mode) != 0o640:
+                    raise HostError("Published file mode self-test failed: {}".format(item))
 
         capture_path = root / "capture.log"
         original_stdin = sys.stdin
