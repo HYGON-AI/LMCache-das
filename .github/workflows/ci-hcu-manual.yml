@@ -41,7 +41,8 @@ jobs:
       ${{
         github.ref == 'refs/heads/main' ||
         github.ref == 'refs/heads/v0.3.13_dev' ||
-        github.ref == 'refs/heads/ci-test'
+        github.ref == 'refs/heads/ci-test' ||
+        github.ref == 'refs/heads/ci/weekly-timeout-validation'
       }}
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
