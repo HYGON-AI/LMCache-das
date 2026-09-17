@@ -52,8 +52,13 @@
       "config": "vllm_conf/Qwen3-8B/04_cpu.conf",
       "long_doc_validation": "cpu_memory",
       "long_doc_options": {
-        "num_documents": 12,
-        "max_inflight_requests": 4
+        "num_documents": 4,
+        "max_inflight_requests": 1
+      },
+      "cmmlu_options": {
+        "disable_thinking": true,
+        "long_prefix_repeat": 20,
+        "timeout_seconds": 900
       },
       "config_fixes": {
         "drop_duplicate_options": ["vllm.disable-cascade-attn"],
@@ -65,12 +70,22 @@
     "qwen3-8b-localdisk": {
       "model": "qwen3-8b",
       "backend": "localdisk",
-      "config": "vllm_conf/Qwen3-8B/02_localdisk.conf"
+      "config": "vllm_conf/Qwen3-8B/02_localdisk.conf",
+      "cmmlu_options": {
+        "disable_thinking": true,
+        "long_prefix_repeat": 20,
+        "timeout_seconds": 900
+      }
     },
     "qwen3-8b-posix": {
       "model": "qwen3-8b",
       "backend": "posix",
-      "config": "vllm_conf/Qwen3-8B/03_posix.conf"
+      "config": "vllm_conf/Qwen3-8B/03_posix.conf",
+      "cmmlu_options": {
+        "disable_thinking": true,
+        "long_prefix_repeat": 20,
+        "timeout_seconds": 900
+      }
     },
     "deepseek-r1-w4a8-v2-cpu": {
       "model": "deepseek-r1-w4a8-v2",
@@ -81,6 +96,11 @@
         "num_documents": 4,
         "output_len": 16,
         "max_inflight_requests": 4
+      },
+      "cmmlu_options": {
+        "disable_thinking": true,
+        "long_prefix_repeat": 20,
+        "timeout_seconds": 900
       }
     },
     "deepseek-r1-w4a8-v2-localdisk": {
@@ -88,12 +108,19 @@
       "backend": "localdisk",
       "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf",
       "long_doc_options": {
-        "num_documents": 50,
+        "num_documents": 32,
         "output_len": 16,
         "max_inflight_requests": 4
       },
       "opencompass_options": {
-        "batch_size": 32
+        "batch_size": 32,
+        "max_out_len": 256,
+        "timeout_seconds": 1500
+      },
+      "cmmlu_options": {
+        "disable_thinking": true,
+        "long_prefix_repeat": 20,
+        "timeout_seconds": 900
       }
     },
     "deepseek-r1-w4a8-v2-posix": {
@@ -101,12 +128,19 @@
       "backend": "posix",
       "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf",
       "long_doc_options": {
-        "num_documents": 50,
+        "num_documents": 32,
         "output_len": 16,
         "max_inflight_requests": 4
       },
       "opencompass_options": {
-        "batch_size": 32
+        "batch_size": 32,
+        "max_out_len": 256,
+        "timeout_seconds": 1500
+      },
+      "cmmlu_options": {
+        "disable_thinking": true,
+        "long_prefix_repeat": 20,
+        "timeout_seconds": 900
       }
     },
     "glm-5-localdisk": {

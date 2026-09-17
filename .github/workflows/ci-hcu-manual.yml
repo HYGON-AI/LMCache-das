@@ -19,7 +19,7 @@ on:
         required: true
         default: framework
         type: choice
-        options: [framework, qwen-smoke, weekly-bw1100, full]
+        options: [framework, qwen-smoke, deepseek-posix, weekly-bw1100, full]
       runner:
         description: Organization runner; auto uses the reviewed multi-node assignment
         required: true
@@ -81,7 +81,12 @@ jobs:
   qwen-localdisk:
     name: qwen-localdisk
     needs: framework
-    if: ${{ inputs.profile != 'framework' }}
+    if: >-
+      ${{
+        inputs.profile == 'qwen-smoke' ||
+        inputs.profile == 'weekly-bw1100' ||
+        inputs.profile == 'full'
+      }}
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
       controller_ref: ${{ github.sha }}
@@ -101,7 +106,12 @@ jobs:
   qwen-posix:
     name: qwen-posix
     needs: framework
-    if: ${{ inputs.profile != 'framework' }}
+    if: >-
+      ${{
+        inputs.profile == 'qwen-smoke' ||
+        inputs.profile == 'weekly-bw1100' ||
+        inputs.profile == 'full'
+      }}
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
       controller_ref: ${{ github.sha }}
@@ -161,7 +171,12 @@ jobs:
   deepseek-posix:
     name: deepseek-posix
     needs: framework
-    if: ${{ inputs.profile == 'weekly-bw1100' || inputs.profile == 'full' }}
+    if: >-
+      ${{
+        inputs.profile == 'deepseek-posix' ||
+        inputs.profile == 'weekly-bw1100' ||
+        inputs.profile == 'full'
+      }}
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
       controller_ref: ${{ github.sha }}
@@ -206,7 +221,7 @@ jobs:
       - name: Validate split jobs and publish run summary
         env:
           SOURCE_SHA: ${{ needs.framework.outputs.source_sha }}
-          EXPECTED_JOBS: ${{ inputs.profile == 'framework' && 'framework' || inputs.profile == 'qwen-smoke' && 'framework,qwen-localdisk,qwen-posix' || 'framework,qwen-cpu,qwen-localdisk,qwen-posix,deepseek-cpu,deepseek-localdisk,deepseek-posix' }}
+          EXPECTED_JOBS: ${{ inputs.profile == 'framework' && 'framework' || inputs.profile == 'qwen-smoke' && 'framework,qwen-localdisk,qwen-posix' || inputs.profile == 'deepseek-posix' && 'framework,deepseek-posix' || 'framework,qwen-cpu,qwen-localdisk,qwen-posix,deepseek-cpu,deepseek-localdisk,deepseek-posix' }}
         run: |
           [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           python3 ci/hcu/aggregate-jobs.py \

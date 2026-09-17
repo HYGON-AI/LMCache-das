@@ -45,6 +45,12 @@ ALLOWED_LONG_DOC_OPTIONS = {
 }
 ALLOWED_OPENCOMPASS_OPTIONS = {
     "batch_size": (1, 32),
+    "max_out_len": (64, 2048),
+    "timeout_seconds": (300, 7200),
+}
+ALLOWED_CMMLU_OPTIONS = {
+    "long_prefix_repeat": (1, 45),
+    "timeout_seconds": (300, 7200),
 }
 ALLOWED_LONG_DOC_VALIDATIONS = {"tool", "cpu_memory"}
 
@@ -249,6 +255,34 @@ def validate_manifest(manifest):
             ):
                 raise ModelCIError(
                     "scenario {} has an invalid OpenCompass {} value".format(
+                        scenario_id, name
+                    )
+                )
+        cmmlu_options = scenario.get("cmmlu_options", {})
+        if (
+            not isinstance(cmmlu_options, dict)
+            or set(cmmlu_options) - (set(ALLOWED_CMMLU_OPTIONS) | {"disable_thinking"})
+        ):
+            raise ModelCIError(
+                "scenario {} has invalid CMMLU options".format(scenario_id)
+            )
+        for name, value in cmmlu_options.items():
+            if name == "disable_thinking":
+                if value is not True:
+                    raise ModelCIError(
+                        "scenario {} must explicitly disable CMMLU thinking".format(
+                            scenario_id
+                        )
+                    )
+                continue
+            lower, upper = ALLOWED_CMMLU_OPTIONS[name]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not lower <= value <= upper
+            ):
+                raise ModelCIError(
+                    "scenario {} has an invalid CMMLU {} value".format(
                         scenario_id, name
                     )
                 )
@@ -506,6 +540,41 @@ def prepare_effective_config(tool_root, scenario, case_id):
     destination_root = reviewed_root / "vllm_conf" / ".ci-effective"
     destination_root.mkdir(parents=True, exist_ok=True)
     destination = destination_root / "{}.conf".format(case_id)
+    destination.write_text(text, encoding="utf-8")
+    return destination
+
+
+def prepare_effective_cmmlu_script(tool_root, scenario, case_id):
+    reviewed_root = Path(tool_root).resolve()
+    source = (
+        reviewed_root / "cases/3-vllm-func/103-vllm-demo-cmmlu_prompt_long.py"
+    ).resolve()
+    try:
+        source.relative_to(reviewed_root)
+    except ValueError:
+        raise ModelCIError("CMMLU script escaped the reviewed test tool")
+    text = source.read_text(encoding="utf-8")
+    options = scenario.get("cmmlu_options", {})
+    if options.get("disable_thinking"):
+        needle = """        extra_body=dict(
+            top_p=1,
+            seed=42,
+        ),
+"""
+        replacement = """        extra_body=dict(
+            top_p=1,
+            seed=42,
+            chat_template_kwargs=dict(enable_thinking=False),
+        ),
+"""
+        if text.count(needle) != 1:
+            raise ModelCIError(
+                "reviewed CMMLU thinking-control anchor did not match exactly once"
+            )
+        text = text.replace(needle, replacement)
+    destination_root = reviewed_root / "cases/3-vllm-func/.ci-effective"
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination = destination_root / "{}-cmmlu.py".format(case_id)
     destination.write_text(text, encoding="utf-8")
     return destination
 
@@ -856,7 +925,7 @@ def retryable_start_failure(result_path, tool_root):
     )
 
 
-def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir, work_dir, opencompass_dir, scenario):
+def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir, work_dir, opencompass_dir, scenario, case_id="scenario"):
     config = str(config)
     python = sys.executable
     commands = [
@@ -896,15 +965,37 @@ def scenario_commands(manifest, tool_root, config, checks, results_dir, logs_dir
     if "opencompass" in checks:
         if opencompass_dir is None:
             raise ModelCIError("the scenario requires a writable OpenCompass tree")
-        command = [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", str(opencompass_dir), "--work_dir", str(work_dir / "opencompass"), "--timeout", str(manifest["timeouts"]["opencompass_seconds"]), "--acc-threshold", str(manifest["thresholds"]["humaneval"])]
-        if "batch_size" in scenario.get("opencompass_options", {}):
-            command.extend(
-                ["--batch-size", str(scenario["opencompass_options"]["batch_size"])]
+        opencompass_options = scenario.get("opencompass_options", {})
+        opencompass_timeout = int(
+            opencompass_options.get(
+                "timeout_seconds", manifest["timeouts"]["opencompass_seconds"]
             )
-        commands.append(("opencompass", command, int(manifest["timeouts"]["opencompass_seconds"]) + 60))
+        )
+        command = [python, "-m", "lmcache_test.opencompass_acc", "--vllm_conf", config, "--results_dir", str(results_dir), "--step_name", "opencompass", "--opencompass_dir", str(opencompass_dir), "--work_dir", str(work_dir / "opencompass"), "--timeout", str(opencompass_timeout), "--acc-threshold", str(manifest["thresholds"]["humaneval"])]
+        option_flags = {
+            "batch_size": "--batch-size",
+            "max_out_len": "--max-out-len",
+        }
+        for name in sorted(set(opencompass_options) & set(option_flags)):
+            command.extend([option_flags[name], str(opencompass_options[name])])
+        commands.append(("opencompass", command, opencompass_timeout + 60))
         expected.append("opencompass")
     if "cmmlu" in checks:
-        commands.append(("cmmlu", [python, str(tool_root / "cases/3-vllm-func/103-vllm-demo-cmmlu_prompt_long.py"), "--vllm_conf", config, "--work_dir", str(work_dir / "cmmlu"), "--strict_log_check"], int(manifest["timeouts"]["cmmlu_seconds"])))
+        cmmlu_options = scenario.get("cmmlu_options", {})
+        cmmlu_timeout = int(
+            cmmlu_options.get(
+                "timeout_seconds", manifest["timeouts"]["cmmlu_seconds"]
+            )
+        )
+        cmmlu_script = prepare_effective_cmmlu_script(
+            tool_root, scenario, case_id
+        )
+        command = [python, str(cmmlu_script), "--vllm_conf", config, "--work_dir", str(work_dir / "cmmlu"), "--strict_log_check"]
+        if "long_prefix_repeat" in cmmlu_options:
+            command.extend(
+                ["--long-prefix-repeat", str(cmmlu_options["long_prefix_repeat"])]
+            )
+        commands.append(("cmmlu", command, cmmlu_timeout))
     commands.append(("print-model-log", [python, "-m", "lmcache_test.print_model_logs", "--results_dir", str(results_dir)], 600))
     expected.append("print_model_logs")
     return commands, expected, config
@@ -950,7 +1041,7 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
     config = prepare_effective_config(tool_root, scenario, case_id)
     commands, expected, config = scenario_commands(
         manifest, tool_root, config, checks, results_dir, logs_dir, work_dir,
-        opencompass_dir, scenario
+        opencompass_dir, scenario, case_id
     )
     model = manifest["models"][manifest["scenarios"][scenario_id]["model"]]
     scenario_environment = dict(model.get("environment", {}))
@@ -1173,6 +1264,7 @@ def run_scenario(manifest, tool_root, scenario_id, checks, repeat_index, output_
         "environment": scenario_environment,
         "start_model_attempts_used": start_model_attempts_used,
         "opencompass_options": dict(scenario.get("opencompass_options", {})),
+        "cmmlu_options": dict(scenario.get("cmmlu_options", {})),
     }
 
 
@@ -1333,6 +1425,31 @@ disable-cascade-attn = true
             raise ModelCIError("the writable OpenCompass tree was not prepared")
         tool_root = root / "tool"
         tool_root.mkdir()
+        cmmlu_source = (
+            tool_root
+            / "cases/3-vllm-func/103-vllm-demo-cmmlu_prompt_long.py"
+        )
+        cmmlu_source.parent.mkdir(parents=True)
+        cmmlu_source.write_text(
+            """models = [
+    dict(
+        extra_body=dict(
+            top_p=1,
+            seed=42,
+        ),
+    ),
+]
+""",
+            encoding="utf-8",
+        )
+        effective_cmmlu = prepare_effective_cmmlu_script(
+            tool_root,
+            {"cmmlu_options": {"disable_thinking": True}},
+            "selftest",
+        )
+        effective_cmmlu_text = effective_cmmlu.read_text(encoding="utf-8")
+        if "chat_template_kwargs=dict(enable_thinking=False)" not in effective_cmmlu_text:
+            raise ModelCIError("the CMMLU thinking-control patch was not applied")
         adapter = prepare_opencompass_conda_shim(tool_root, opencompass_copy)
         shim = Path(adapter["path"])
         version = subprocess.check_output(
