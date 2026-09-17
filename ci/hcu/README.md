@@ -69,7 +69,7 @@ All HCU workflows use the organization runner pool below:
 10.17.1.2  ci-nmz2  self-hosted, Linux, X64, ci, bw1100, nmz2
 10.17.1.3  ci-nmz3  self-hosted, Linux, X64, ci, bw1100, nmz3
 10.17.1.4  ci-nmz4  self-hosted, Linux, X64, ci, bw1100, nmz4
-10.17.1.5  ci-nmz5  self-hosted, Linux, X64, ci, bw1100, nmz5
+10.17.1.6  ci-nmz6  self-hosted, Linux, X64, ci, bw1100, nmz6
 ```
 
 Profiles:
@@ -85,7 +85,7 @@ Profiles:
 PR assigns framework, LocalDisk and POSIX to nmz1, nmz2 and nmz3. Weekly uses
 all five nodes with at most five model jobs in parallel; two jobs assigned to
 nmz1 are serialized by its single organization Runner listener. Manual runs
-accept `runner=auto|nmz1|nmz2|nmz3|nmz4|nmz5`: `auto` uses the reviewed mapping,
+accept `runner=auto|nmz1|nmz2|nmz3|nmz4|nmz6`: `auto` uses the reviewed mapping,
 while a named runner forces all selected jobs onto that node for diagnostics.
 Each job also holds a node-specific host lock for its complete execution unit.
 The organization Runner Group must grant this repository access. Each physical

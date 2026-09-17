@@ -845,13 +845,26 @@ def prepare_shared_parent(shared_root, parts):
             "Runner is not a member of shared archive group {}".format(root_info.st_gid)
         )
     current = shared_root
+    effective_uid = os.geteuid() if hasattr(os, "geteuid") else None
     for part in parts:
         current = current / part
         current.mkdir(mode=0o2770, exist_ok=True)
         info = os.lstat(str(current))
         if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
             raise HostError("Unsafe shared archive directory: {}".format(current))
-        os.chmod(str(current), 0o2770)
+        if info.st_gid != root_info.st_gid:
+            raise HostError(
+                "Shared archive directory has unexpected group: {}".format(current)
+            )
+        mode = stat.S_IMODE(info.st_mode)
+        if effective_uid is None or info.st_uid == effective_uid:
+            if mode != 0o2770:
+                os.chmod(str(current), 0o2770)
+        elif mode != 0o2770:
+            raise HostError(
+                "Shared archive directory owned by another runner UID must have "
+                "mode 2770: {}".format(current)
+            )
     return current
 
 
@@ -1085,6 +1098,22 @@ def cmd_selftest(_args):
             ):
                 if stat.S_IMODE(os.stat(str(item)).st_mode) != 0o2770:
                     raise HostError("Shared parent mode self-test failed: {}".format(item))
+            original_geteuid = os.geteuid
+            original_chmod = os.chmod
+            try:
+                os.geteuid = lambda: original_geteuid() + 1
+
+                def reject_cross_owner_chmod(path, mode):
+                    raise HostError(
+                        "Cross-owner shared directory was unexpectedly chmod'ed: {}".format(path)
+                    )
+
+                os.chmod = reject_cross_owner_chmod
+                if prepare_shared_parent(shared, ("pr", "123", "1", "a" * 40)) != publication_parent:
+                    raise HostError("Cross-owner shared parent self-test returned wrong path")
+            finally:
+                os.geteuid = original_geteuid
+                os.chmod = original_chmod
             if stat.S_IMODE(os.stat(str(published)).st_mode) != 0o2750:
                 raise HostError("Published directory mode self-test failed")
             for item in (published / "reports" / "failure.xml", published / "SHA256SUMS", ready):

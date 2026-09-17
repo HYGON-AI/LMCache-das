@@ -351,12 +351,16 @@ host_preflight() {
     command -v git >/dev/null
     command -v python3 >/dev/null
     command -v sha256sum >/dev/null
+    if [[ "$(id -un)" != "github" ]]; then
+        printf '%s\n' 'LMCache HCU CI requires the organization Runner service user to be github' >&2
+        return 1
+    fi
     python3 -c 'import sys; assert sys.version_info >= (3, 6)'
     [[ "${CONTAINER_MEMORY}" =~ ^[1-9][0-9]*[gGmM]$ ]]
     [[ "${CONTAINER_CPUS}" =~ ^[1-9][0-9]*$ ]]
     [[ "${OUTPUT_LIMIT}" =~ ^[1-9][0-9]*[gGmM]$ ]]
     [[ "${PHASE_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]{2,5}$ ]]
-    [[ "${RUNNER_KIND}" =~ ^nmz[1-5]$ ]]
+    [[ "${RUNNER_KIND}" =~ ^(nmz[1-4]|nmz6)$ ]]
     [[ "${JOB_ROLE}" == "framework" || "${JOB_ROLE}" == "model" ]]
     if [[ "${JOB_ROLE}" == "framework" ]]; then
         [[ "${JOB_KEY}" == "framework" && "${MODEL_PROFILE}" == "framework" ]]
@@ -576,7 +580,12 @@ verify_container_absent() {
     output="$(docker inspect "${name}" 2>&1)"; rc=$?
     set -e
     if (( rc == 0 )); then return 1; fi
-    grep -Fqi 'no such object' <<<"${output}"
+    is_missing_container_error "${output}"
+}
+
+is_missing_container_error() {
+    local output="$1"
+    grep -Eqi 'no such (object|container)' <<<"${output}"
 }
 
 cleanup_legacy_lease_container() {
@@ -585,7 +594,7 @@ cleanup_legacy_lease_container() {
     output="$(docker inspect "${LEASE_CONTAINER}" 2>&1)"; rc=$?
     set -e
     if (( rc != 0 )); then
-        grep -Fqi 'no such object' <<<"${output}"
+        is_missing_container_error "${output}"
         return $?
     fi
     labels="$(docker inspect -f '{{ index .Config.Labels "lmcache-hcu-ci.run-key" }}' "${LEASE_CONTAINER}")" || return 1
@@ -605,7 +614,7 @@ remove_named_container() {
         docker rm -f "${name}" >/dev/null
         return $?
     fi
-    grep -Fqi 'no such object' <<<"${output}" && return 0
+    is_missing_container_error "${output}" && return 0
     return 1
 }
 

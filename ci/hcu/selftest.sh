@@ -21,10 +21,15 @@ python3 -m json.tool "${SCRIPT_DIR}/test-baseline.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/model-test-manifest.json" >/dev/null
 bash -n "${SCRIPT_DIR}/run.sh"
 bash -n "${SCRIPT_DIR}/run-tests.sh"
+for missing_message in \
+    'Error: No such object: lmcache-hcu-ci-selftest' \
+    'Error response from daemon: No such container: lmcache-hcu-ci-selftest'; do
+    grep -Eqi 'no such (object|container)' <<<"${missing_message}"
+done
 python3 "${SCRIPT_DIR}/host.py" selftest
 python3 "${SCRIPT_DIR}/model-ci.py" selftest
 python3 "${SCRIPT_DIR}/aggregate-jobs.py" --selftest
-for runner in nmz1 nmz2 nmz3 nmz4 nmz5; do
+for runner in nmz1 nmz2 nmz3 nmz4 nmz6; do
     python3 "${SCRIPT_DIR}/model-ci.py" validate \
         --manifest "${SCRIPT_DIR}/model-test-manifest.json" \
         --profile pr --runner "${runner}" --visible-devices 0,1 >/dev/null

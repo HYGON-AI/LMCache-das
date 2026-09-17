@@ -103,8 +103,8 @@ def selected_runs(manifest, profile):
 def validate_manifest(manifest):
     if manifest.get("schema_version") != 1:
         raise ModelCIError("unsupported model manifest schema")
-    if manifest.get("runners") != ["nmz1", "nmz2", "nmz3", "nmz4", "nmz5"]:
-        raise ModelCIError("the reviewed organization runner set must be nmz1 through nmz5")
+    if manifest.get("runners") != ["nmz1", "nmz2", "nmz3", "nmz4", "nmz6"]:
+        raise ModelCIError("the reviewed organization runner set must be nmz1-nmz4 and nmz6")
     tool = manifest.get("tool")
     if not isinstance(tool, dict) or not COMMIT.match(str(tool.get("commit", ""))):
         raise ModelCIError("the test tool must be pinned to a 40-character commit")

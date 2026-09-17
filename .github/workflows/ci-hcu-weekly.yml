@@ -63,7 +63,7 @@ jobs:
           - job_key: deepseek-localdisk
             model_profile: weekly-deepseek-localdisk
             visible_devices: "0,1,2,3,4,5,6,7"
-            runner_kind: nmz5
+            runner_kind: nmz6
           - job_key: deepseek-posix
             model_profile: weekly-deepseek-posix
             visible_devices: "0,1,2,3,4,5,6,7"

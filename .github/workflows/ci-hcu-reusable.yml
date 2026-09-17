@@ -101,7 +101,7 @@ jobs:
           inputs.runner_kind == 'nmz2' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ2 ||
           inputs.runner_kind == 'nmz3' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ3 ||
           inputs.runner_kind == 'nmz4' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 ||
-          inputs.runner_kind == 'nmz5' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ5 ||
+          inputs.runner_kind == 'nmz6' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ6 ||
           ''
         }}
       HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}

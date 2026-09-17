@@ -25,7 +25,7 @@ on:
         required: true
         default: auto
         type: choice
-        options: [auto, nmz1, nmz2, nmz3, nmz4, nmz5]
+        options: [auto, nmz1, nmz2, nmz3, nmz4, nmz6]
 
 permissions:
   contents: read
@@ -151,7 +151,7 @@ jobs:
       model_profile: weekly-deepseek-localdisk
       job_role: model
       job_key: deepseek-localdisk
-      runner_kind: ${{ inputs.runner == 'auto' && 'nmz5' || inputs.runner }}
+      runner_kind: ${{ inputs.runner == 'auto' && 'nmz6' || inputs.runner }}
       visible_devices: "0,1,2,3,4,5,6,7"
       repeat: ${{ inputs.repeat }}
       timeout_minutes: 360
