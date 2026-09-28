@@ -24,7 +24,7 @@ from typing import Optional, Any, List, Union
 import torch
 
 logger = init_logger(__name__)
-LMCACHE_UPSTREAM_TAG = "v0.3.13"
+LMCACHE_UPSTREAM_TAG = "v0.4.2"
 LMCACHE_HCU_PATCHED = False
 
 
@@ -108,6 +108,16 @@ def _patch_vllm_paged_mem_gpu_connector_v2() -> None:
     base_gpu_connector.VLLMPagedMemLayerwiseGPUConnector = HCUVLLMPagedMemLayerwiseGPUConnector
 
 
+    import lmcache.v1.gpu_connector.gpu_connectors as _gpu_connectors_mod
+    _gpu_connectors_mod.VLLMPagedMemGPUConnectorV2 = VLLMPagedMemHCUConnectorV2
+    _gpu_connectors_mod.VLLMBufferLayerwiseGPUConnector = (
+        HCUVLLMBufferLayerwiseGPUConnector
+    )
+    _gpu_connectors_mod.VLLMPagedMemLayerwiseGPUConnector = (
+        HCUVLLMPagedMemLayerwiseGPUConnector
+    )
+
+
     # Rebind the class in already-imported caller modules that pulled it into
     # their own namespace via `from lmcache.v1.gpu_connector import ...`.
     for module_name in (
@@ -119,74 +129,7 @@ def _patch_vllm_paged_mem_gpu_connector_v2() -> None:
             mod.VLLMPagedMemGPUConnectorV2 = VLLMPagedMemHCUConnectorV2
 
 
-def _hcu_get_shapes(self, num_tokens: Optional[int] = None) -> list[torch.Size]:
-    """Get the shapes of the KV cache in LMCache"""
-    if num_tokens is None:
-        num_tokens = self.chunk_size
-    if self.kv_layer_groups_manager.kv_layer_groups:
-        shapes = []
-        kv_size = 1 if self.use_mla else 2
-        for group in self.kv_layer_groups_manager.kv_layer_groups:
-            hidden_dim = group.hidden_dim_size(self.use_mla)
-            shapes.append(
-                torch.Size(
-                    [
-                        kv_size,
-                        group.num_layers,
-                        num_tokens,
-                        hidden_dim,
-                    ]
-                )
-            )
-        return shapes
-    else:
-        return [
-            torch.Size(
-                [
-                    self.kv_shape[1],
-                    self.kv_shape[0],
-                    num_tokens,
-                    self.kv_shape[3] * self.kv_shape[4],
-                ]
-            )
-        ]
-
-def _patch_metadata_get_shapes() -> None:
-
-    logger.info("Apply hcu metadata get_shapes patch.")
-
-    import lmcache.v1.metadata
-
-    lmcache.v1.metadata.LMCacheMetadata.get_shapes = _hcu_get_shapes
-
-
-def _hcu_hidden_dim_size(self, use_mla: bool) -> int:  # noqa: F841  # bound onto KVLayerGroupInfo at patch time
-    """HCU replacement for KVLayerGroupInfo.hidden_dim_size.
-
-    Extends the baseline to also handle the vLLM FlashAttention PA layout,
-    where the KV cache tensor for a group has shape
-    ``[num_blocks, block_size, num_heads, head_size]`` (4-dim) instead of
-    the baseline's ``[2, num_blocks, block_size, num_heads, head_size]`` (MHA)
-    or ``[num_blocks, block_size, head_size]`` (MLA).
-    """
-    import vllm.envs as envs
-
-    if envs.VLLM_USE_FLASH_ATTN_PA and not use_mla:
-        if len(self.shape) == 4:
-            # FlashAttention PA: [num_blocks, block_size, num_heads, head_size]
-            return self.shape[1] * self.shape[3]
-        raise ValueError(f"Invalid shape for FlashAttention PA: {self.shape}")
-
-    if len(self.shape) == 5:
-        # MHA: [2, num_blocks, block_size, num_heads, head_size]
-        return self.shape[3] * self.shape[4]
-    if len(self.shape) == 3:
-        # MLA: [num_blocks, block_size, head_size]
-        return self.shape[2]
-    raise ValueError(f"Invalid shape: {self.shape}")
-
-
-def _hcu_build_kv_layer_groups(self, kv_caches: dict[str, torch.Tensor], use_mla: bool) -> None:
+def _hcu_build_kv_layer_groups(self, kv_caches: dict[str, torch.Tensor]) -> None:
     """Build KV layer groups structure by analyzing each layer's shape and dtype.
 
     Layers with the same shape and dtype are grouped together. This is useful
@@ -202,12 +145,17 @@ def _hcu_build_kv_layer_groups(self, kv_caches: dict[str, torch.Tensor], use_mla
     # Skip if already built (non-empty list)
     from lmcache.v1.kv_layer_groups import KVLayerGroupInfo
     from collections import defaultdict
-    import vllm.envs as envs
+    import os
     if len(self.kv_layer_groups) > 0:
         return
 
     if len(kv_caches) == 0:
         logger.debug("No KV caches available, skipping KV layer groups building")
+        return
+
+    env_value = os.environ.get("VLLM_HCU_USE_CUSTOM_FLASH_ATTN", "false")
+    if self.str_to_bool(env_value):
+        logger.debug("VLLM_HCU_USE_CUSTOM_FLASH_ATTN is true, skipping KV layer groups building")
         return
 
     # Group layers by (shape, dtype) in a single loop
@@ -216,12 +164,12 @@ def _hcu_build_kv_layer_groups(self, kv_caches: dict[str, torch.Tensor], use_mla
     )
 
     for idx, (layer_name, kv_cache) in enumerate(kv_caches.items()):
-        if envs.VLLM_USE_FLASH_ATTN_PA and not use_mla:
-            shape = kv_cache[0].shape
-            dtype = kv_cache[0].dtype
+        if isinstance(kv_cache, torch.Tensor):
+            shape, dtype = kv_cache.shape, kv_cache.dtype
         else:
-            shape = kv_cache.shape
-            dtype = kv_cache.dtype
+            k = kv_cache[0]
+            nb, nh, bs, hs = k.shape
+            shape, dtype = torch.Size([nb, 2, bs, nh, hs]), k.dtype
         key = (shape, dtype)
         groups_dict[key].append((layer_name, idx))
 
@@ -257,15 +205,21 @@ def _hcu_build_kv_layer_groups(self, kv_caches: dict[str, torch.Tensor], use_mla
     # Print the group structure
     logger.info("KV layer groups: %s", kv_layer_groups)
 
+def _hcu_str_to_bool(self, val: str) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ('true', '1', 'yes', 'on')
+    return False
+
+
 def _patch_kv_layer_groups():
 
     logger.info("Apply hcu kv_layer_groups patch.")
 
-    from lmcache.v1.kv_layer_groups import KVLayerGroupInfo, KVLayerGroupsManager
+    from lmcache.v1.kv_layer_groups import KVLayerGroupsManager
 
-    KVLayerGroupInfo.hidden_dim_size = (
-        _hcu_hidden_dim_size
-    )
+    KVLayerGroupsManager.str_to_bool = _hcu_str_to_bool
     KVLayerGroupsManager.build_kv_layer_groups = (
         _hcu_build_kv_layer_groups
     )
@@ -278,9 +232,7 @@ def _hcu_lmcache_connector_build_kv_layer_groups(self):
         kv_layer_groups_manager = (
             self.lmcache_engine.metadata.kv_layer_groups_manager
         )
-        vllm_config = self._vllm_config
-        use_mla = vllm_config.model_config.use_mla if vllm_config.model_config else False
-        kv_layer_groups_manager.build_kv_layer_groups(self.kv_caches, use_mla)
+        kv_layer_groups_manager.build_kv_layer_groups(self.kv_caches)
 
 
 def _hcu_flatten_block_ids(block_ids):
@@ -587,9 +539,19 @@ def _patch_storage_backends() -> None:
             loop,
             dst_device: str = "cuda",
             lmcache_worker= None,
+            skip_backends=None,
+            existing_backends=None,
     ):
-        backends = original_create(config, metadata, loop, dst_device, lmcache_worker)
-        if getattr(config, "xds_path", None) is None or "XdsBackend" in backends:
+        backends = original_create(
+            config, metadata, loop, dst_device, lmcache_worker,
+            skip_backends, existing_backends,
+        )
+        if (
+            getattr(config, "xds_path", None) is None
+            or "XdsBackend" in backends
+            or (skip_backends is not None and "XdsBackend" in skip_backends)
+            or not storage_backend.is_cuda_worker(metadata)
+        ):
             return backends
 
         actual_dst_device = dst_device
@@ -655,6 +617,20 @@ def _patch_cache_engine() -> None:
     hcu_create_memory_allocator = (
         hcu_cache_engine.LMCacheEngineBuilder._Create_memory_allocator
     )
+    hcu_store = hcu_cache_engine.LMCacheEngine.store
+    hcu_process_tokens_internal = (
+        hcu_cache_engine.LMCacheEngine._process_tokens_internal
+    )
+
+    if not getattr(engine_cls.store, "_lmcache_hcu_patched", False):
+        hcu_store._lmcache_hcu_patched = True
+        engine_cls.store = hcu_store
+
+    if not getattr(
+        engine_cls._process_tokens_internal, "_lmcache_hcu_patched", False
+    ):
+        hcu_process_tokens_internal._lmcache_hcu_patched = True
+        engine_cls._process_tokens_internal = hcu_process_tokens_internal
 
     if not getattr(engine_cls.retrieve, "_lmcache_hcu_patched", False):
         hcu_retrieve._lmcache_hcu_patched = True
@@ -693,89 +669,207 @@ def _patch_local_disk_backend() -> None:
 
     patch_local_disk_backend(local_disk_backend)
 
-def _patch_storage_manager_allocate_and_copy_objects() -> None:
-    logger.info("Apply HCU storage manager allocate_and_copy_objects patch.")
+
+
+def _patch_pq_executor() -> None:
+    logger.info("Apply HCU pq_executor patch.")
     try:
-        import lmcache.v1.storage_backend.storage_manager as storage_manager
-    except Exception as exc:
-        logger.warning(
-            "Skip StorageManager allocate_and_copy_objects patch (import failed): %s",
-            exc,
+        from lmcache.v1.storage_backend.job_executor.pq_executor import (
+            AsyncPQExecutor,
         )
-        return
-
-    original_allocate_and_copy_objects = storage_manager.allocate_and_copy_objects
-    if getattr(
-        original_allocate_and_copy_objects,
-        "_lmcache_hcu_allocated_keys_patched",
-        False,
-    ):
-        return
-
-    def allocate_and_copy_objects_with_allocated_keys(
-            allocator_backend,
-            keys,
-            src_memory_objs,
-            stream,
-    ):
-        """Return the keys that were actually allocated with copied objects."""
-        allocated_keys = []
-        allocated_objects = []
-        for key, src_memory_obj in zip(keys, src_memory_objs, strict=False):
-            if allocator_backend.contains(key):
-                continue
-            memory_obj = allocator_backend.allocate(
-                src_memory_obj.get_shape(),
-                src_memory_obj.get_dtype(),
-                fmt=src_memory_obj.meta.fmt,
-                eviction=True,
-                busy_loop=False,
-            )
-
-            if memory_obj is None:
-                break
-
-            if memory_obj.tensor is None:
-                logger.warning(
-                    "Allocated MemoryObj has None tensor, this is unexpected. "
-                    "Releasing the memory object."
-                )
-                memory_obj.ref_count_down()
-                break
-
-            with torch.cuda.stream(stream):
-                memory_obj.tensor.copy_(src_memory_obj.tensor, non_blocking=True)
-            allocated_keys.append(key)
-            allocated_objects.append(memory_obj)
-
-        stream.synchronize()
-        return allocated_keys, allocated_objects
-
-    allocate_and_copy_objects_with_allocated_keys._lmcache_hcu_allocated_keys_patched = True
-    storage_manager.allocate_and_copy_objects = allocate_and_copy_objects_with_allocated_keys
-
-
-def _patch_storage_manager_touch_cache() -> None:
-    logger.info("Apply HCU storage manager touch_cache patch.")
-    try:
-        import lmcache.v1.storage_backend.storage_manager as storage_manager
     except Exception as exc:
-        logger.warning("Skip StorageManager touch_cache patch (import failed): %s", exc)
+        logger.warning("Skip pq_executor patch (import failed): %s", exc)
         return
 
-    storage_manager_cls = storage_manager.StorageManager
-    original_touch_cache = storage_manager_cls.touch_cache
-    if getattr(original_touch_cache, "_lmcache_hcu_xds_patched", False):
+    original_submit = AsyncPQExecutor.submit_job
+    if getattr(original_submit, "_lmcache_hcu_pq_closed_guard", False):
         return
 
-    def touch_cache_with_xds(self):
-        for backend_name, backend in self.storage_backends.items():
-            if backend_name in ("LocalCPUBackend", "LocalDiskBackend", "XdsBackend"):
-                backend.touch_cache()
+    def _make_guarded_submit(original):
+        async def _guarded_submit_job(self, fn, *args, **kwargs):
+            if getattr(self, "_closed", False):
+                raise RuntimeError("priority executor is closed")
+            return await original(self, fn, *args, **kwargs)
 
-    touch_cache_with_xds._lmcache_hcu_xds_patched = True
-    storage_manager_cls.touch_cache = touch_cache_with_xds
+        return _guarded_submit_job
 
+    guarded_submit = _make_guarded_submit(original_submit)
+    guarded_submit._lmcache_hcu_pq_closed_guard = True
+    guarded_submit.__wrapped__ = original_submit
+    AsyncPQExecutor.submit_job = guarded_submit
+
+
+
+
+def _patch_gpu_memory_allocator_lifecycle() -> None:
+    """Patch the GPU memory allocator close lifecycle and guards."""
+    logger.info("Apply HCU GPU memory allocator lifecycle patch.")
+    try:
+        import lmcache.v1.memory_management as memory_management
+    except Exception as exc:
+        logger.warning("Skip GPU allocator lifecycle patch (import failed): %s", exc)
+        return
+
+    gpu_cls = memory_management.GPUMemoryAllocator
+    if getattr(gpu_cls, "_lmcache_hcu_lifecycle_patched", False):
+        return
+
+    original_init = gpu_cls.__init__
+
+    def _hcu_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._closed = False
+
+    def _ensure_open(self):
+        if getattr(self, "_closed", False):
+            raise RuntimeError(f"{type(self).__name__} is closed")
+
+    def _release_gpu_pool(self):
+        if hasattr(self, "allocator"):
+            del self.allocator
+        if hasattr(self, "tensor"):
+            del self.tensor
+
+    original_allocate = gpu_cls.allocate
+    original_batched_allocate = gpu_cls.batched_allocate
+
+    def _guarded_allocate(self, *args, **kwargs):
+        self._ensure_open()
+        return original_allocate(self, *args, **kwargs)
+
+    def _guarded_batched_allocate(self, *args, **kwargs):
+        self._ensure_open()
+        return original_batched_allocate(self, *args, **kwargs)
+
+    def _guarded_free(self, memory_obj, allocator_type=None):
+        with self.device_mem_lock:
+            if getattr(self, "_closed", False):
+                memory_obj.invalidate()
+                return
+            self.allocator.free(memory_obj, allocator_type)
+
+    def _guarded_batched_free(self, memory_objs, allocator_type=None, update_stats=True):
+        with self.device_mem_lock:
+            if getattr(self, "_closed", False):
+                for memory_obj in memory_objs:
+                    memory_obj.invalidate()
+                return
+            self.allocator.batched_free(memory_objs, allocator_type, update_stats)
+
+    gpu_cls.__init__ = _hcu_init
+    gpu_cls._ensure_open = _ensure_open
+    gpu_cls._release_gpu_pool = _release_gpu_pool
+    gpu_cls.allocate = _guarded_allocate
+    gpu_cls.batched_allocate = _guarded_batched_allocate
+    gpu_cls.free = _guarded_free
+    gpu_cls.batched_free = _guarded_batched_free
+    gpu_cls._lmcache_hcu_lifecycle_patched = True
+
+
+
+def _patch_hcu_xds_nobuffer() -> None:
+    """Wire the HCU XDS no-buffer (block-first / direct-IO) modules.
+
+    Replaces the upstream modules in `sys.modules` so that any later import
+    resolves to the HCU implementation (same mechanism as
+    `_patch_storage_backends`).
+    """
+    logger.info("Apply HCU XDS no-buffer (block-first/direct-IO) patches.")
+    import importlib
+
+    try:
+        import lmcache.integration.vllm.vllm_v1_adapter as _upstream_adapter
+        from lmcache_hcu.integration.vllm.vllm_v1_adapter import (
+            LMCacheConnectorV1Impl as _HCUConnectorV1Impl,
+        )
+
+        _upstream_adapter.LMCacheConnectorV1Impl.register_cross_layers_kv_cache = (
+            _HCUConnectorV1Impl.register_cross_layers_kv_cache
+        )
+        _upstream_adapter.LMCacheConnectorV1Impl._init_connector_state = (
+            _HCUConnectorV1Impl._init_connector_state
+        )
+        _upstream_adapter.LMCacheConnectorV1Impl._get_engine_kvcaches = (
+            _HCUConnectorV1Impl._get_engine_kvcaches
+        )
+        _upstream_adapter.LMCacheConnectorV1Impl.start_load_kv = (
+            _HCUConnectorV1Impl.start_load_kv
+        )
+        _upstream_adapter.LMCacheConnectorV1Impl.wait_for_save = (
+            _HCUConnectorV1Impl.wait_for_save
+        )
+        from lmcache_hcu.integration.vllm._hcu_wait_for_save_patch import (
+            patch_wait_for_save as _reinstall_wait_for_save_patch,
+        )
+
+        _reinstall_wait_for_save_patch(_upstream_adapter)
+        import lmcache_hcu.integration.vllm.vllm_v1_adapter as _hcu_adapter_module
+
+        for _name in (
+            "LMCacheConnectorMetadata",
+            "LoadSpec",
+            "SaveSpec",
+            "DisaggSpec",
+            "ReqMeta",
+            "RequestTracker",
+        ):
+            _upstream_cls = getattr(_upstream_adapter, _name, None)
+            if _upstream_cls is not None:
+                setattr(_hcu_adapter_module, _name, _upstream_cls)
+        logger.info(
+            "Install HCU cross-layer adapter hooks on the upstream adapter class."
+        )
+    except Exception as exc:
+        logger.warning("Skip cross-layer adapter hooks: %s", exc)
+
+    targets = [
+        ("lmcache.v1.metadata", "lmcache_hcu.v1.metadata"),
+        ("lmcache.v1.storage_backend.block_first_disk", "lmcache_hcu.v1.storage_backend.block_first_disk"),
+        ("lmcache.v1.storage_backend.direct_io", "lmcache_hcu.v1.storage_backend.direct_io"),
+        ("lmcache.v1.storage_backend.storage_manager", "lmcache_hcu.v1.storage_backend.storage_manager"),
+        ("lmcache.v1.storage_backend.xds_backend", "lmcache_hcu.v1.storage_backend.xds_backend"),
+        ("lmcache.v1.gpu_connector.gpu_connectors", "lmcache_hcu.v1.gpu_connector.gpu_connectors"),
+        ("lmcache.v1.gpu_connector.utils", "lmcache_hcu.v1.gpu_connector.utils"),
+        ("lmcache.v1.manager", "lmcache_hcu.v1.manager"),
+        ("lmcache.integration.vllm.lmcache_connector_v1", "lmcache_hcu.integration.vllm.lmcache_connector_v1"),
+        ("lmcache.integration.vllm.utils", "lmcache_hcu.integration.vllm.utils"),
+    ]
+    swapped = []
+    for src_name, hcu_name in targets:
+        try:
+            hcu_mod = importlib.import_module(hcu_name)
+        except Exception as exc:
+            logger.warning("Skip %s patch (import %s failed): %s", src_name, hcu_name, exc)
+            continue
+        sys.modules[src_name] = hcu_mod
+        swapped.append(src_name)
+        parent_name, _, leaf = src_name.rpartition(".")
+        try:
+            setattr(importlib.import_module(parent_name), leaf, hcu_mod)
+        except Exception as exc:
+            logger.warning("Skip attribute binding %s.%s: %s", parent_name, leaf, exc)
+
+    replaced = set(swapped)
+    rebound = 0
+    for mod in list(sys.modules.values()):
+        mod_name = getattr(mod, "__name__", None)
+        if not mod_name or not mod_name.startswith(("lmcache.", "lmcache_hcu.")):
+            continue
+        if mod_name in replaced:
+            continue
+        for attr, value in list(vars(mod).items()):
+            try:
+                owner = getattr(value, "__module__", None)
+            except Exception:
+                continue
+            if owner in replaced:
+                replacement = getattr(sys.modules[owner], attr, None)
+                if replacement is not None:
+                    setattr(mod, attr, replacement)
+                    rebound += 1
+    logger.info(
+        "Rebound %d stale references left over from the pre-swap imports.", rebound
+    )
 
 def apply_runtime_patches() -> None:
     global LMCACHE_HCU_PATCHED
@@ -785,17 +879,17 @@ def apply_runtime_patches() -> None:
     _patch_config()
     _patch_observability()
     _patch_xds_config()
+    _patch_gpu_memory_allocator_lifecycle()
     _patch_hyfile_memory_allocator()
     _patch_vllm_paged_mem_gpu_connector_v2()
     _patch_kv_layer_groups()
-    _patch_metadata_get_shapes()
     _patch_vllm_v1_adapter()
     _patch_hash_token()
     _patch_cache_controller_message()
+    _patch_pq_executor()
+    _patch_hcu_xds_nobuffer()
     _patch_storage_backends()
     _patch_local_disk_backend()
-    _patch_storage_manager_allocate_and_copy_objects()
-    _patch_storage_manager_touch_cache()
     _patch_cache_engine()
     LMCACHE_HCU_PATCHED = True
 

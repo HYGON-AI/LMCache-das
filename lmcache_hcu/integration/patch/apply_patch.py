@@ -29,6 +29,7 @@ from lmcache_hcu.integration.patch.base_patcher import logger
 PATCH_TASKS = [
     ("lmcache", "lmcache_hcu.integration.patch.lmcache.runtime_import_patch", "LMCacheRuntimeImportPatcher"),
     ("lmcache", "lmcache_hcu.integration.patch.vllm.connector_import_patch", "VllmConnectorImportPatcher"),
+    ("lmcache", "lmcache_hcu.integration.patch.lmcache.utils_metadata_patch", "LMCacheUtilsMetadataPatcher"),
 ]
 
 

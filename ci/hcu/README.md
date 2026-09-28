@@ -120,7 +120,7 @@ Registry images should use an `@sha256:` digest. A reviewed image imported
 from a tar archive may use its tag, but the immutable Docker image ID remains
 mandatory and is checked before any container starts. The same image ID must
 be loaded on every selected runner. The initial image baseline is Python 3.10,
-Torch 2.9.0, vLLM 0.15.1, DTK 26.04, ABI 1 and `gfx938`.
+Torch 2.10.0, vLLM 0.18.1, DTK 26.04, ABI 1 and `gfx938`.
 
 The initial tar image contains reviewed, pre-existing `pip check` conflicts.
 The wheel gate records `pip check` before and after installing the current
@@ -170,7 +170,7 @@ the complete start phase remains independently bounded by its one-hour timeout.
 The fixed upstream source is read from:
 
 ```text
-/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111/
+/ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e/
 ```
 
 Each run creates only one cache subtree below its selected runner's cache root. The
@@ -254,7 +254,7 @@ Full wheel and model execution additionally require the reviewed image on the
 selected runner, its cache root, model assets and fixed local test-tool archive. The implementation does
 not weaken a failed compatibility, packaging, patch, pytest or model gate.
 
-The pinned LMCache v0.3.13 server fixture assumes that its CPU server becomes
+The pinned LMCache v0.4.2 server fixture assumes that its CPU server becomes
 ready within fifteen seconds.  The reviewed HCU image needs about twenty
 seconds to import the HCU runtime on BW1100.  CI therefore loads the trusted
 `lmcache_ci_pytest` support plugin, which changes only this fixture's readiness

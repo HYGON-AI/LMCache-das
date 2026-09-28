@@ -1,8 +1,8 @@
 # Third Party Notices
 ## LMCache
 - Source: https://github.com/LMCache/LMCache
-- Upstream version: v0.3.13
-- Fixed source commit: fc031d471a566edb6d49a86c9116cc23cfb04111
+- Upstream version: v0.4.2
+- Fixed source commit: 9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e
 - License: Apache License, Version 2.0
 - Original copyright: Copyright 2024-2025 LMCache Authors.
 - Hygon modifications: HCU platform adaptations, build scripts, performance optimizations, and documentation updates.

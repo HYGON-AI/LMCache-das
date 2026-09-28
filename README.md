@@ -6,9 +6,9 @@ This repository is based on the following fixed upstream baseline:<br>
  
  • Upstream branch: dev<br>
  
- • Upstream tag: v0.3.13<br>
+ • Upstream tag: v0.4.2<br>
  
- • Upstream commit: fc031d471a566edb6d49a86c9116cc23cfb04111<br>
+ • Upstream commit: 9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e<br>
  
  • Upstream license: Apache-2.0<br>
  
@@ -28,7 +28,7 @@ Please ensure your environment matches the versions below.
 
 | LMCache-hcu | LMCache | vLLM Version |
 | :--- | :--- | :--- |
-| **v0.3.13** | **v0.3.13** | **v0.15.0** |
+| **v0.4.2** | **v0.4.2** | **v0.18.1** |
 
 
 ## Design
@@ -111,7 +111,7 @@ Typical editable install on a HCU/ROCm/DTK machine:
 first install the baseline LMCache:
 
 ```bash
-git clone -b v0.3.13 https://github.com/LMCache/LMCache.git
+git clone -b v0.4.2 https://github.com/LMCache/LMCache.git
 cd LMCache
 PYTORCH_ROCM_ARCH="{your_rocm_arch}" \
 TORCH_DONT_CHECK_COMPILER_ABI=1 \

@@ -16,10 +16,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import torch
 from lmcache.v1.memory_management import MemoryFormat
+
+if TYPE_CHECKING:
+    from lmcache_hcu.v1.storage_backend.block_first_disk import BlockFirstDiskMetadata
 
 
 @dataclass
@@ -30,6 +33,7 @@ class XDSCacheMetadata:
     dtype: Optional[torch.dtype] = None
     fmt: MemoryFormat = None
     pin_count: int = 0
+    disk_metadata: Optional[BlockFirstDiskMetadata] = None
 
     def pin(self) -> bool:
         self.pin_count += 1

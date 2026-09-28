@@ -29,9 +29,10 @@ class LMCacheRuntimeImportPatcher(BasePatcher):
     """Inject `import lmcache_hcu` into upstream LMCache package import path."""
 
     PACKAGE_NAME = "lmcache"
-    # The target source tag is v0.3.13, while development installs may report
-    # 0.3.14.dev0. Keep the source patch enabled for that development version.
-    VERSION_SERIES = (VersionRange("0.3.13", "0.3.15"),)
+    # This package is intentionally pinned to the LMCache 0.4.2 API.
+    # Keep the source patch disabled for later releases until their patch
+    # surface has been reviewed explicitly.
+    VERSION_SERIES = (VersionRange("0.4.2", "0.4.3"),)
 
     @staticmethod
     def _target_file() -> Path:

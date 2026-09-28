@@ -4,7 +4,16 @@
 # Standard
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Union,
+)
 import os
 import threading
 import time
@@ -14,11 +23,13 @@ from prometheus_client import REGISTRY
 import prometheus_client
 
 # First Party
-from lmcache.config import LMCacheEngineMetadata
 from lmcache.logging import init_logger
 from lmcache.usage_context import ContinuousUsageContext
 from lmcache.utils import thread_safe
 from lmcache.v1.metadata import LMCacheMetadata
+
+if TYPE_CHECKING:
+    from lmcache.v1.config import LMCacheEngineConfig
 
 logger = init_logger(__name__)
 
@@ -73,9 +84,9 @@ class LMCacheStats:
     pinned_memory_objs_count: int  # the number of pinned memory objects
 
     # Distribution measurements
-    time_to_lookup: List[float]  #Added: lookup latency list in seconds
     time_to_retrieve: List[float]
     time_to_store: List[float]
+    time_to_lookup: List[float]
     retrieve_speed: List[float]  # Tokens per second
     store_speed: List[float]  # Tokens per second
 
@@ -88,22 +99,6 @@ class LMCacheStats:
     store_process_tokens_time: List[float]
     store_from_gpu_time: List[float]
     store_put_time: List[float]
-
-    # Thread pool status
-    thread_pool_active_threads: int
-    thread_pool_queue_size: int
-
-    # ========== Added: disk-to-memory statistics ==========
-    interval_disk_to_memory_requests: int  # Number of requests in the interval
-    interval_disk_to_memory_tokens: int    # Total tokens in the interval
-    time_to_disk_to_memory: List[float]    # Per-load latency list in seconds
-    disk_to_memory_speed: List[float]      # Per-load speed list in tokens/second
-
-    # ========== Added: memory-to-HBM statistics ==========
-    interval_memory_to_hbm_requests: int   # Number of requests in the interval
-    interval_memory_to_hbm_tokens: int     # Total tokens in the interval
-    time_to_memory_to_hbm: List[float]     # Per-load latency list in seconds
-    memory_to_hbm_speed: List[float]       # Per-load speed list in tokens/second
 
     # P2P transfer metrics
     interval_p2p_requests: int
@@ -118,6 +113,55 @@ class LMCacheStats:
     interval_lookup_0_hit_requests: int
 
     interval_request_cache_lifespan: List[float]  # cache lifespan in minutes
+
+    # ========== HCU: disk-to-memory statistics ==========
+    interval_disk_to_memory_requests: int
+    interval_disk_to_memory_tokens: int
+    time_to_disk_to_memory: List[float]
+    disk_to_memory_speed: List[float]
+    # ========== HCU: memory-to-HBM statistics ==========
+    interval_memory_to_hbm_requests: int
+    interval_memory_to_hbm_tokens: int
+    time_to_memory_to_hbm: List[float]
+    memory_to_hbm_speed: List[float]
+
+
+@dataclass
+class DiskToMemoryRequestStats:
+    """Statistics for KVCache disk-to-memory requests (HCU)."""
+
+    num_tokens: int
+    start_time: float
+    end_time: float
+
+    def time_to_load(self):
+        if self.end_time == 0:
+            return 0
+        return self.end_time - self.start_time
+
+    def load_speed(self):
+        if self.time_to_load() == 0:
+            return 0
+        return self.num_tokens / self.time_to_load()
+
+
+@dataclass
+class MemoryToHbmRequestStats:
+    """Statistics for KVCache memory-to-HBM requests (HCU)."""
+
+    num_tokens: int
+    start_time: float
+    end_time: float
+
+    def time_to_load(self):
+        if self.end_time == 0:
+            return 0
+        return self.end_time - self.start_time
+
+    def load_speed(self):
+        if self.time_to_load() == 0:
+            return 0
+        return self.num_tokens / self.time_to_load()
 
 
 @dataclass
@@ -236,45 +280,6 @@ class StoreRequestStats:
 
 
 @dataclass
-class DiskToMemoryRequestStats:
-    """Statistics for KVCache disk-to-memory requests"""
-    num_tokens: int
-    start_time: float
-    end_time: float
-
-    def time_to_load(self):
-        """Calculate per-request disk-to-memory load latency in seconds"""
-        if self.end_time == 0:
-            return 0
-        return self.end_time - self.start_time
-
-    def load_speed(self):
-        """Calculate per-request disk-to-memory load speed in tokens/second"""
-        if self.time_to_load() == 0:
-            return 0
-        return self.num_tokens / self.time_to_load()
-
-
-@dataclass
-class MemoryToHbmRequestStats:
-    """Statistics for KVCache memory-to-HBM requests"""
-    num_tokens: int
-    start_time: float
-    end_time: float
-
-    def time_to_load(self):
-        """Calculate per-request memory-to-HBM load latency in seconds"""
-        if self.end_time == 0:
-            return 0
-        return self.end_time - self.start_time
-
-    def load_speed(self):
-        """Calculate per-request memory-to-HBM load speed in tokens/second"""
-        if self.time_to_load() == 0:
-            return 0
-        return self.num_tokens / self.time_to_load()
-
-@dataclass
 class P2PTransferRequestStats:
     num_tokens: int
     start_time: float
@@ -364,26 +369,16 @@ class LMCStatsMonitor:
         self.last_retrieve_warning_time: float = 0.0
         self.skipped_retrieve_warning_count: int = 0
 
-        # Thread pool real-time status; use Gauge directly without interval aggregation
-        self.thread_pool_active_threads = 0
-        self.thread_pool_queue_size = 0
-
-        # ========== Added: disk-to-memory related statistics ==========
-        # Requests and total tokens within the interval (incremental)
+        # ========== HCU: disk-to-memory statistics ==========
         self.interval_disk_to_memory_requests = 0
         self.interval_disk_to_memory_tokens = 0
-        # Store unfinished requests (key: request_id, value: DiskToMemoryRequestStats)
         self.disk_to_memory_requests: Dict[int, DiskToMemoryRequestStats] = {}
-        # Auto-incrementing request ID counter
         self.disk_to_memory_request_id = 0
 
-        # ========== Added: memory-to-HBM related statistics ==========
-        # Requests and total tokens within the interval (incremental)
+        # ========== HCU: memory-to-HBM statistics ==========
         self.interval_memory_to_hbm_requests = 0
         self.interval_memory_to_hbm_tokens = 0
-        # Store unfinished requests (key: request_id, value: MemoryToHbmRequestStats)
         self.memory_to_hbm_requests: Dict[int, MemoryToHbmRequestStats] = {}
-        # Auto-incrementing request ID counter
         self.memory_to_hbm_request_id = 0
 
     def set_current_retrieve_stats(self, stats: RetrieveRequestStats):
@@ -395,91 +390,57 @@ class LMCStatsMonitor:
     def clear_current_retrieve_stats(self):
         self._current_retrieve_stats = None
 
- # ========== Added: disk-to-memory request start ==========
+    # ========== HCU: disk-to-memory request start ==========
     @thread_safe
     def on_disk_to_memory_request(self, num_tokens: int) -> int:
-        """
-        Called when a disk-to-memory load request starts
-        :param num_tokens: Number of tokens loaded by this request
-        :return: Internal request ID used by on_disk_to_memory_finished
-        """
         curr_time = time.time()
         load_stats = DiskToMemoryRequestStats(
-            num_tokens=num_tokens,
-            start_time=curr_time,
-            end_time=0
+            num_tokens=num_tokens, start_time=curr_time, end_time=0
         )
-        # Accumulate interval statistics
         self.interval_disk_to_memory_requests += 1
         self.interval_disk_to_memory_tokens += num_tokens
-        # Store request data
         self.disk_to_memory_requests[self.disk_to_memory_request_id] = load_stats
         self.disk_to_memory_request_id += 1
         return self.disk_to_memory_request_id - 1
 
-    # ========== Added: disk-to-memory request finish ==========
+    # ========== HCU: disk-to-memory request finish ==========
     @thread_safe
     def on_disk_to_memory_finished(self, request_id: int, num_tokens: int = -1):
-        """
-        Called when a disk-to-memory load request finishes
-        :param request_id: ID returned by on_disk_to_memory_request
-        :param num_tokens: Optional actual number of loaded tokens, overriding the initial value
-        """
         curr_time = time.time()
-        assert request_id in self.disk_to_memory_requests, f"Invalid request_id: {request_id}"
+        assert request_id in self.disk_to_memory_requests, (
+            f"Invalid request_id: {request_id}"
+        )
         load_stats = self.disk_to_memory_requests[request_id]
         load_stats.end_time = curr_time
-        # If a valid token count is provided, update it for cases where actual and expected load counts differ
         if num_tokens >= 0:
-            # Correct interval token statistics by the delta
-            self.interval_disk_to_memory_tokens += (num_tokens - load_stats.num_tokens)
+            self.interval_disk_to_memory_tokens += num_tokens - load_stats.num_tokens
             load_stats.num_tokens = num_tokens
 
-    # ========== Added: memory-to-HBM request start ==========
+    # ========== HCU: memory-to-HBM request start ==========
     @thread_safe
     def on_memory_to_hbm_request(self, num_tokens: int) -> int:
-        """
-        Called when a memory-to-HBM load request starts
-        :param num_tokens: Number of tokens loaded by this request
-        :return: Internal request ID used by on_memory_to_hbm_finished
-        """
         curr_time = time.time()
         load_stats = MemoryToHbmRequestStats(
-            num_tokens=num_tokens,
-            start_time=curr_time,
-            end_time=0
+            num_tokens=num_tokens, start_time=curr_time, end_time=0
         )
-        # Accumulate interval statistics
         self.interval_memory_to_hbm_requests += 1
         self.interval_memory_to_hbm_tokens += num_tokens
-        # Store request data
         self.memory_to_hbm_requests[self.memory_to_hbm_request_id] = load_stats
         self.memory_to_hbm_request_id += 1
         return self.memory_to_hbm_request_id - 1
 
-    # ========== Added: memory-to-HBM request finish ==========
+    # ========== HCU: memory-to-HBM request finish ==========
     @thread_safe
     def on_memory_to_hbm_finished(self, request_id: int, num_tokens: int = -1):
-        """
-        Called when a memory-to-HBM load request finishes
-        :param request_id: ID returned by on_memory_to_hbm_request
-        :param num_tokens: Optional actual number of loaded tokens, overriding the initial value
-        """
         curr_time = time.time()
-        assert request_id in self.memory_to_hbm_requests, f"Invalid request_id: {request_id}"
+        assert request_id in self.memory_to_hbm_requests, (
+            f"Invalid request_id: {request_id}"
+        )
         load_stats = self.memory_to_hbm_requests[request_id]
         load_stats.end_time = curr_time
-        # If a valid token count is provided, update it for cases where actual and expected load counts differ
         if num_tokens >= 0:
-            # Correct interval token statistics by the delta
-            self.interval_memory_to_hbm_tokens += (num_tokens - load_stats.num_tokens)
+            self.interval_memory_to_hbm_tokens += num_tokens - load_stats.num_tokens
             load_stats.num_tokens = num_tokens
-
-    @thread_safe
-    def update_thread_pool_status(self, active_threads: int, queue_size: int):
-        """Update thread pool status"""
-        self.thread_pool_active_threads = active_threads
-        self.thread_pool_queue_size = queue_size
 
     @thread_safe
     def on_lookup_request(self, num_tokens: int) -> LookupRequestStats:
@@ -521,7 +482,6 @@ class LMCStatsMonitor:
         stats.is_finished = True
         if stats.end_time == 0:
             stats.end_time = curr_time
-        self.interval_lookup_tokens += stats.num_tokens
         self.interval_lookup_hits += num_hit_tokens
         if num_hit_tokens == 0:
             self.interval_lookup_0_hit_requests += 1
@@ -559,7 +519,6 @@ class LMCStatsMonitor:
         retrieve_stats.local_hit_tokens = num_retrieved_tokens
         if retrieve_stats.end_time == 0:
             retrieve_stats.end_time = curr_time
-        self.interval_requested_tokens += retrieve_stats.num_tokens
         self.interval_hit_tokens += num_retrieved_tokens
         self.clear_current_retrieve_stats()
 
@@ -816,23 +775,21 @@ class LMCStatsMonitor:
         self.interval_request_cache_lifespan.clear()
         self.reuse_chunk_id = 0
 
-        # Added: clean up unfinished disk-to-memory requests
+        # HCU: clean up unfinished disk-to-memory requests
         new_disk_to_memory_requests = {}
         for request_id, stats in self.disk_to_memory_requests.items():
             if stats.end_time == 0:
                 new_disk_to_memory_requests[request_id] = stats
         self.disk_to_memory_requests = new_disk_to_memory_requests
-        # Reset interval counters for incremental statistics at the end of the interval
         self.interval_disk_to_memory_requests = 0
         self.interval_disk_to_memory_tokens = 0
 
-        # Added: clean up unfinished memory-to-HBM requests
+        # HCU: clean up unfinished memory-to-HBM requests
         new_memory_to_hbm_requests = {}
         for request_id, stats in self.memory_to_hbm_requests.items():
             if stats.end_time == 0:
                 new_memory_to_hbm_requests[request_id] = stats
         self.memory_to_hbm_requests = new_memory_to_hbm_requests
-        # Reset interval counters for incremental statistics at the end of the interval
         self.interval_memory_to_hbm_requests = 0
         self.interval_memory_to_hbm_tokens = 0
 
@@ -877,11 +834,6 @@ class LMCStatsMonitor:
         def filter_out_zeros(stats: Iterable[float]) -> List[float]:
             return [x for x in stats if x != 0]
 
-                # Added: collect lookup latency, filtering unfinished requests
-        time_to_lookup = filter_out_zeros(
-            [stats.time_to_lookup() for stats in self.lookup_requests.values() if stats.is_finished]
-        )
-
         time_to_retrieve = filter_out_zeros(
             stats.time_to_retrieve() for stats in self.retrieve_requests.values()
         )
@@ -890,20 +842,8 @@ class LMCStatsMonitor:
             stats.time_to_store() for stats in self.store_requests.values()
         )
 
-                # Added: collect disk-to-memory latency and speed
-        time_to_disk_to_memory = filter_out_zeros(
-            [stats.time_to_load() for stats in self.disk_to_memory_requests.values()]
-        )
-        disk_to_memory_speed = filter_out_zeros(
-            [stats.load_speed() for stats in self.disk_to_memory_requests.values()]
-        )
-
-        # Added: collect memory-to-HBM latency and speed
-        time_to_memory_to_hbm = filter_out_zeros(
-            [stats.time_to_load() for stats in self.memory_to_hbm_requests.values()]
-        )
-        memory_to_hbm_speed = filter_out_zeros(
-            [stats.load_speed() for stats in self.memory_to_hbm_requests.values()]
+        time_to_lookup = filter_out_zeros(
+            stats.time_to_lookup() for stats in self.lookup_requests.values()
         )
 
         retrieve_speed = filter_out_zeros(
@@ -958,6 +898,21 @@ class LMCStatsMonitor:
 
         request_lifespan = list(self.interval_request_cache_lifespan.values())
 
+        # HCU: collect disk-to-memory latency and speed
+        time_to_disk_to_memory = filter_out_zeros(
+            [stats.time_to_load() for stats in self.disk_to_memory_requests.values()]
+        )
+        disk_to_memory_speed = filter_out_zeros(
+            [stats.load_speed() for stats in self.disk_to_memory_requests.values()]
+        )
+        # HCU: collect memory-to-HBM latency and speed
+        time_to_memory_to_hbm = filter_out_zeros(
+            [stats.time_to_load() for stats in self.memory_to_hbm_requests.values()]
+        )
+        memory_to_hbm_speed = filter_out_zeros(
+            [stats.load_speed() for stats in self.memory_to_hbm_requests.values()]
+        )
+
         ret = LMCacheStats(
             interval_retrieve_requests=self.interval_retrieve_requests,
             interval_store_requests=self.interval_store_requests,
@@ -989,15 +944,11 @@ class LMCStatsMonitor:
             local_storage_usage_bytes=self.local_storage_usage_bytes,
             active_memory_objs_count=self.active_memory_objs_count,
             pinned_memory_objs_count=self.pinned_memory_objs_count,
-            time_to_lookup=time_to_lookup,  # Added: add lookup latency data
             time_to_retrieve=time_to_retrieve,
             time_to_store=time_to_store,
+            time_to_lookup=time_to_lookup,
             retrieve_speed=retrieve_speed,
             store_speed=store_speed,
-
-            thread_pool_active_threads=self.thread_pool_active_threads,
-            thread_pool_queue_size=self.thread_pool_queue_size,
-
             retrieve_process_tokens_time=retrieve_process_tokens_time,
             retrieve_broadcast_time=retrieve_broadcast_time,
             retrieve_to_gpu_time=retrieve_to_gpu_time,
@@ -1017,12 +968,11 @@ class LMCStatsMonitor:
             interval_request_cache_lifespan=request_lifespan,
             interval_prompt_tokens=self.interval_prompt_tokens,
             interval_lookup_0_hit_requests=self.interval_lookup_0_hit_requests,
-            # ========== Added: disk-to-memory statistic fields ==========
+            # ========== HCU: disk-to-memory / memory-to-HBM ==========
             interval_disk_to_memory_requests=self.interval_disk_to_memory_requests,
             interval_disk_to_memory_tokens=self.interval_disk_to_memory_tokens,
             time_to_disk_to_memory=time_to_disk_to_memory,
             disk_to_memory_speed=disk_to_memory_speed,
-            # ========== Added: memory-to-HBM statistic fields ==========
             interval_memory_to_hbm_requests=self.interval_memory_to_hbm_requests,
             interval_memory_to_hbm_tokens=self.interval_memory_to_hbm_tokens,
             time_to_memory_to_hbm=time_to_memory_to_hbm,
@@ -1058,7 +1008,59 @@ class PrometheusLogger:
     _counter_cls = prometheus_client.Counter
     _histogram_cls = prometheus_client.Histogram
 
-    def __init__(self, metadata: LMCacheMetadata):
+    def _create_counter(
+        self, name: str, documentation: str, labelnames: List[str]
+    ) -> prometheus_client.Counter:
+        """Create a Counter and register it for reset_counters()."""
+        counter = self._counter_cls(
+            name=name, documentation=documentation, labelnames=labelnames
+        )
+        self._counters.append(counter)
+        return counter
+
+    def _create_histogram(
+        self,
+        name: str,
+        documentation: str,
+        labelnames: List[str],
+        buckets: Sequence[float],
+    ) -> prometheus_client.Histogram:
+        """Create a Histogram and register it for reset_histograms().
+
+        If the ``config`` object's extra_config contains a key
+        ``histogram_bucket_<short_name>`` (where ``<short_name>``
+        is the metric name without the ``lmcache:`` prefix),
+        the value will be used as the bucket list, overriding
+        the default *buckets* argument.
+        """
+        short_name = name.split(":", 1)[-1]
+        config_key = "histogram_bucket_%s" % short_name
+        custom = (
+            self.config.get_extra_config_value(config_key)
+            if self.config is not None
+            else None
+        )
+        if custom is not None:
+            buckets = custom
+            logger.info(
+                "Using custom buckets for histogram %s from extra_config key '%s'",
+                name,
+                config_key,
+            )
+        histogram = self._histogram_cls(
+            name=name,
+            documentation=documentation,
+            labelnames=labelnames,
+            buckets=buckets,
+        )
+        self._histograms.append(histogram)
+        return histogram
+
+    def __init__(
+        self,
+        metadata: LMCacheMetadata,
+        config: Optional["LMCacheEngineConfig"] = None,
+    ):
         # Ensure PROMETHEUS_MULTIPROC_DIR is set before any metric registration
         if "PROMETHEUS_MULTIPROC_DIR" not in os.environ:
             default_dir = "/tmp/lmcache_prometheus"
@@ -1067,108 +1069,46 @@ class PrometheusLogger:
                 os.makedirs(default_dir, exist_ok=True)
 
         self.metadata = metadata
+        self.config = config
 
         self.labels = self._metadata_to_labels(metadata)
         labelnames = list(self.labels.keys())
 
-        # ========== Added: disk-to-memory metrics ==========
-        # Counter: request count
-        self.counter_num_disk_to_memory_requests = self._counter_cls(
-            name="lmcache:num_disk_to_memory_requests",
-            documentation="Total number of KVCache disk→memory load requests",
-            labelnames=labelnames,
-        )
-        # Counter: total token count
-        self.counter_num_disk_to_memory_tokens = self._counter_cls(
-            name="lmcache:num_disk_to_memory_tokens",
-            documentation="Total number of tokens loaded from disk to memory",
-            labelnames=labelnames,
-        )
-        # Histogram: load latency in seconds
-        disk_to_memory_time_buckets = [
-            0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1,
-            0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0
-        ]
-        self.histogram_time_to_disk_to_memory = self._histogram_cls(
-            name="lmcache:time_to_disk_to_memory",
-            documentation="Time to load KVCache from disk to memory (seconds)",
-            labelnames=labelnames,
-            buckets=disk_to_memory_time_buckets,
-        )
-        # Histogram: load speed in tokens/second
-        disk_to_memory_speed_buckets = [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
-        self.histogram_disk_to_memory_speed = self._histogram_cls(
-            name="lmcache:disk_to_memory_speed",
-            documentation="Load speed of KVCache from disk to memory (tokens per second)",
-            labelnames=labelnames,
-            buckets=disk_to_memory_speed_buckets,
-        )
+        # List to track all counters/histograms for reset methods
+        self._counters: List[prometheus_client.Counter] = []
+        self._histograms: List[prometheus_client.Histogram] = []
 
-        # ========== Added: memory-to-HBM metrics ==========
-        # Counter: request count
-        self.counter_num_memory_to_hbm_requests = self._counter_cls(
-            name="lmcache:num_memory_to_hbm_requests",
-            documentation="Total number of KVCache memory→HBM load requests",
-            labelnames=labelnames,
-        )
-        # Counter: total token count
-        self.counter_num_memory_to_hbm_tokens = self._counter_cls(
-            name="lmcache:num_memory_to_hbm_tokens",
-            documentation="Total number of tokens loaded from memory to HBM",
-            labelnames=labelnames,
-        )
-        # Histogram: load latency in seconds
-        memory_to_hbm_time_buckets = [
-            0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1,
-            0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0
-        ]
-        self.histogram_time_to_memory_to_hbm = self._histogram_cls(
-            name="lmcache:time_to_memory_to_hbm",
-            documentation="Time to load KVCache from memory to HBM (seconds)",
-            labelnames=labelnames,
-            buckets=memory_to_hbm_time_buckets,
-        )
-        # Histogram: load speed in tokens/second
-        memory_to_hbm_speed_buckets = [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
-        self.histogram_memory_to_hbm_speed = self._histogram_cls(
-            name="lmcache:memory_to_hbm_speed",
-            documentation="Load speed of KVCache from memory to HBM (tokens per second)",
-            labelnames=labelnames,
-            buckets=memory_to_hbm_speed_buckets,
-        )
-
-
-        self.counter_num_retrieve_requests = self._counter_cls(
+        self.counter_num_retrieve_requests = self._create_counter(
             name="lmcache:num_retrieve_requests",
             documentation="Total number of retrieve requests sent to lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_store_requests = self._counter_cls(
+        self.counter_num_store_requests = self._create_counter(
             name="lmcache:num_store_requests",
             documentation="Total number of store requests sent to lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_lookup_requests = self._counter_cls(
+        self.counter_num_lookup_requests = self._create_counter(
             name="lmcache:num_lookup_requests",
             documentation="Total number of lookup requests sent to lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_requested_tokens = self._counter_cls(
+        self.counter_num_requested_tokens = self._create_counter(
             name="lmcache:num_requested_tokens",
             documentation="Total number of tokens requested from lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_hit_tokens = self._counter_cls(
+        self.counter_num_hit_tokens = self._create_counter(
             name="lmcache:num_hit_tokens",
             documentation="Total number of tokens hit in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_stored_tokens = self._counter_cls(
+        self.counter_num_stored_tokens = self._create_counter(
             name="lmcache:num_stored_tokens",
             documentation=(
                 "Total number of tokens stored in lmcache including evicted ones"
@@ -1176,93 +1116,93 @@ class PrometheusLogger:
             labelnames=labelnames,
         )
 
-        self.counter_num_lookup_tokens = self._counter_cls(
+        self.counter_num_lookup_tokens = self._create_counter(
             name="lmcache:num_lookup_tokens",
             documentation="Total number of tokens requested in lookup from lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_lookup_hits = self._counter_cls(
+        self.counter_num_lookup_hits = self._create_counter(
             name="lmcache:num_lookup_hits",
             documentation="Total number of tokens hit in lookup from lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_vllm_hit_tokens = self._counter_cls(
+        self.counter_num_vllm_hit_tokens = self._create_counter(
             name="lmcache:num_vllm_hit_tokens",
             documentation="Number of hit tokens in vllm",
             labelnames=labelnames,
         )
 
-        self.counter_num_prompt_tokens = self._counter_cls(
+        self.counter_num_prompt_tokens = self._create_counter(
             name="lmcache:num_prompt_tokens",
             documentation="Number of prompt tokens in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_read_requests = self._counter_cls(
+        self.counter_num_remote_read_requests = self._create_counter(
             name="lmcache:num_remote_read_requests",
             documentation="Total number of requests read from "
             "remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_read_bytes = self._counter_cls(
+        self.counter_num_remote_read_bytes = self._create_counter(
             name="lmcache:num_remote_read_bytes",
             documentation="Total number of bytes read from remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_write_requests = self._counter_cls(
+        self.counter_num_remote_write_requests = self._create_counter(
             name="lmcache:num_remote_write_requests",
             documentation="Total number of requests write to "
             "remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_num_remote_write_bytes = self._counter_cls(
+        self.counter_num_remote_write_bytes = self._create_counter(
             name="lmcache:num_remote_write_bytes",
             documentation="Total number of bytes write to remote backends in lmcache",
             labelnames=labelnames,
         )
 
-        self.counter_local_cpu_evict_count = self._counter_cls(
+        self.counter_local_cpu_evict_count = self._create_counter(
             name="lmcache:local_cpu_evict_count",
             documentation="Total number of evict in local cpu backend",
             labelnames=labelnames,
         )
 
-        self.counter_local_cpu_evict_keys_count = self._counter_cls(
+        self.counter_local_cpu_evict_keys_count = self._create_counter(
             name="lmcache:local_cpu_evict_keys_count",
             documentation="Total number of evict keys in local cpu backend",
             labelnames=labelnames,
         )
 
-        self.counter_local_cpu_evict_failed_count = self._counter_cls(
+        self.counter_local_cpu_evict_failed_count = self._create_counter(
             name="lmcache:local_cpu_evict_failed_count",
             documentation="Total number of failed eviction in local cpu backend",
             labelnames=labelnames,
         )
 
-        self.counter_forced_unpin_count = self._counter_cls(
+        self.counter_forced_unpin_count = self._create_counter(
             name="lmcache:forced_unpin_count",
             documentation="Total number of forced unpin due to timeout",
             labelnames=labelnames,
         )
 
-        self.counter_lookup_0_hit_requests = self._counter_cls(
+        self.counter_lookup_0_hit_requests = self._create_counter(
             name="lmcache:lookup_0_hit_requests",
             documentation="Total number of 0 hit lookup requests",
             labelnames=labelnames,
         )
 
-        self.counter_num_slow_retrieval_by_time = self._counter_cls(
+        self.counter_num_slow_retrieval_by_time = self._create_counter(
             name="lmcache:num_slow_retrieval_by_time",
             documentation="Total number of slow retrievals by time threshold",
             labelnames=labelnames,
         )
 
-        self.counter_num_slow_retrieval_by_speed = self._counter_cls(
+        self.counter_num_slow_retrieval_by_speed = self._create_counter(
             name="lmcache:num_slow_retrieval_by_speed",
             documentation="Total number of slow retrievals by speed threshold",
             labelnames=labelnames,
@@ -1335,7 +1275,7 @@ class PrometheusLogger:
             7.5,
             10.0,
         ]
-        self.histogram_time_to_retrieve = self._histogram_cls(
+        self.histogram_time_to_retrieve = self._create_histogram(
             name="lmcache:time_to_retrieve",
             documentation="Time to retrieve from lmcache (seconds)",
             labelnames=labelnames,
@@ -1360,7 +1300,7 @@ class PrometheusLogger:
             7.5,
             10.0,
         ]
-        self.histogram_time_to_store = self._histogram_cls(
+        self.histogram_time_to_store = self._create_histogram(
             name="lmcache:time_to_store",
             documentation="Time to store to lmcache (seconds)",
             labelnames=labelnames,
@@ -1370,7 +1310,7 @@ class PrometheusLogger:
         time_to_lookup_buckets = [
             0.00001 * 2**i for i in range(20)
         ]  # 0.01 ms to 5000 ms
-        self.histogram_time_to_lookup = self._histogram_cls(
+        self.histogram_time_to_lookup = self._create_histogram(
             name="lmcache:time_to_lookup",
             documentation="Time to lookup in lmcache (seconds)",
             labelnames=labelnames,
@@ -1378,49 +1318,51 @@ class PrometheusLogger:
         )
 
         profiling_buckets = [0.00001 * 2**i for i in range(20)]  # 0.01 ms to 5000 ms
-        self.histogram_retrieve_process_tokens_time = self._histogram_cls(
+        self.histogram_retrieve_process_tokens_time = self._create_histogram(
             name="lmcache:retrieve_process_tokens_time",
             documentation="Time to process tokens in retrieve (seconds)",
             labelnames=labelnames,
             buckets=profiling_buckets,
         )
-        self.histogram_retrieve_broadcast_time = self._histogram_cls(
+        self.histogram_retrieve_broadcast_time = self._create_histogram(
             name="lmcache:retrieve_broadcast_time",
             documentation="Time to broadcast memory objects in retrieve (seconds)",
             labelnames=labelnames,
             buckets=profiling_buckets,
         )
-        self.histogram_retrieve_to_gpu_time = self._histogram_cls(
+        self.histogram_retrieve_to_gpu_time = self._create_histogram(
             name="lmcache:retrieve_to_gpu_time",
             documentation="Time to move data to GPU in retrieve (seconds)",
             labelnames=labelnames,
             buckets=profiling_buckets,
         )
-        self.histogram_remote_backend_batched_get_blocking_time = self._histogram_cls(
-            name="lmcache:remote_backend_batched_get_blocking_time",
-            documentation="Time to get data from remote backend (seconds)",
-            labelnames=labelnames,
-            buckets=profiling_buckets,
+        self.histogram_remote_backend_batched_get_blocking_time = (
+            self._create_histogram(
+                name="lmcache:remote_backend_batched_get_blocking_time",
+                documentation="Time to get data from remote backend (seconds)",
+                labelnames=labelnames,
+                buckets=profiling_buckets,
+            )
         )
-        self.histogram_instrumented_connector_batched_get_time = self._histogram_cls(
+        self.histogram_instrumented_connector_batched_get_time = self._create_histogram(
             name="lmcache:instrumented_connector_batched_get_time",
             documentation="Time used by the connector (seconds)",
             labelnames=labelnames,
             buckets=profiling_buckets,
         )
-        self.histogram_store_process_tokens_time = self._histogram_cls(
+        self.histogram_store_process_tokens_time = self._create_histogram(
             name="lmcache:store_process_tokens_time",
             documentation="Time to process tokens in store (seconds)",
             labelnames=labelnames,
             buckets=profiling_buckets,
         )
-        self.histogram_store_from_gpu_time = self._histogram_cls(
+        self.histogram_store_from_gpu_time = self._create_histogram(
             name="lmcache:store_from_gpu_time",
             documentation="Time to move data from GPU in store (seconds)",
             labelnames=labelnames,
             buckets=profiling_buckets,
         )
-        self.histogram_store_put_time = self._histogram_cls(
+        self.histogram_store_put_time = self._create_histogram(
             name="lmcache:store_put_time",
             documentation="Time to put data to storage in store (seconds)",
             labelnames=labelnames,
@@ -1444,7 +1386,7 @@ class PrometheusLogger:
             32768,
             65536,
         ]
-        self.histogram_retrieve_speed = self._histogram_cls(
+        self.histogram_retrieve_speed = self._create_histogram(
             name="lmcache:retrieve_speed",
             documentation="Retrieve speed of lmcache (tokens per second)",
             labelnames=labelnames,
@@ -1468,7 +1410,7 @@ class PrometheusLogger:
             32768,
             65536,
         ]
-        self.histogram_store_speed = self._histogram_cls(
+        self.histogram_store_speed = self._create_histogram(
             name="lmcache:store_speed",
             documentation="Store speed of lmcache (tokens per second)",
             labelnames=labelnames,
@@ -1494,7 +1436,7 @@ class PrometheusLogger:
             7.5,  # 7.5s
             10.0,  # 10s
         ]
-        self.histogram_p2p_time_to_transfer = self._histogram_cls(
+        self.histogram_p2p_time_to_transfer = self._create_histogram(
             name="lmcache:p2p_time_to_transfer",
             documentation="Time to transfer via P2P (seconds)",
             labelnames=labelnames,
@@ -1518,7 +1460,7 @@ class PrometheusLogger:
             32768,
             65536,
         ]
-        self.histogram_p2p_transfer_speed = self._histogram_cls(
+        self.histogram_p2p_transfer_speed = self._create_histogram(
             name="lmcache:p2p_transfer_speed",
             documentation="P2P transfer speed (tokens per second)",
             labelnames=labelnames,
@@ -1543,7 +1485,7 @@ class PrometheusLogger:
             7500,
             10000,
         ]
-        self.histogram_remote_time_to_get = self._histogram_cls(
+        self.histogram_remote_time_to_get = self._create_histogram(
             name="lmcache:remote_time_to_get",
             documentation="Time to get from remote backends (ms)",
             labelnames=labelnames,
@@ -1568,7 +1510,7 @@ class PrometheusLogger:
             7500,
             10000,
         ]
-        self.histogram_remote_time_to_put = self._histogram_cls(
+        self.histogram_remote_time_to_put = self._create_histogram(
             name="lmcache:remote_time_to_put",
             documentation="Time to put to remote backends (ms)",
             labelnames=labelnames,
@@ -1593,7 +1535,7 @@ class PrometheusLogger:
             7500,
             10000,
         ]
-        self.histogram_remote_time_to_get_sync = self._histogram_cls(
+        self.histogram_remote_time_to_get_sync = self._create_histogram(
             name="lmcache:remote_time_to_get_sync",
             documentation="Time to get from remote backends synchronously(ms)",
             labelnames=labelnames,
@@ -1612,7 +1554,7 @@ class PrometheusLogger:
             0.9,
             1.0,
         ]
-        self.histogram_request_cache_hit_rate = self._histogram_cls(
+        self.histogram_request_cache_hit_rate = self._create_histogram(
             name="lmcache:request_cache_hit_rate",
             documentation="Request cache hit rate",
             labelnames=labelnames,
@@ -1636,7 +1578,7 @@ class PrometheusLogger:
             2500,
             5000,
         ]
-        self.histogram_request_cache_lifespan = self._histogram_cls(
+        self.histogram_request_cache_lifespan = self._create_histogram(
             name="lmcache:request_cache_lifespan",
             documentation="Request cache lifespan in minutes",
             labelnames=labelnames,
@@ -1650,12 +1592,12 @@ class PrometheusLogger:
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         )
-        self.counter_remote_ping_errors = self._counter_cls(
+        self.counter_remote_ping_errors = self._create_counter(
             name="lmcache:remote_ping_errors",
             documentation="Number of ping errors to remote backends",
             labelnames=labelnames,
         )
-        self.counter_remote_ping_successes = self._counter_cls(
+        self.counter_remote_ping_successes = self._create_counter(
             name="lmcache:remote_ping_successes",
             documentation="Number of ping successes to remote backends",
             labelnames=labelnames,
@@ -1666,29 +1608,68 @@ class PrometheusLogger:
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         )
+
+        # ========== HCU: disk-to-memory metrics ==========
+        self.counter_num_disk_to_memory_requests = self._create_counter(
+            name="lmcache:num_disk_to_memory_requests",
+            documentation="Total number of KVCache disk-to-memory load requests",
+            labelnames=labelnames,
+        )
+        self.counter_num_disk_to_memory_tokens = self._create_counter(
+            name="lmcache:num_disk_to_memory_tokens",
+            documentation="Total number of tokens loaded from disk to memory",
+            labelnames=labelnames,
+        )
+        self.histogram_time_to_disk_to_memory = self._create_histogram(
+            name="lmcache:time_to_disk_to_memory",
+            documentation="Time to load KVCache from disk to memory (seconds)",
+            labelnames=labelnames,
+            buckets=[
+                0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1,
+                0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
+            ],
+        )
+        self.histogram_disk_to_memory_speed = self._create_histogram(
+            name="lmcache:disk_to_memory_speed",
+            documentation="Load speed of KVCache from disk to memory (tokens/sec)",
+            labelnames=labelnames,
+            buckets=[
+                1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
+                4096, 8192, 16384, 32768, 65536,
+            ],
+        )
+
+        # ========== HCU: memory-to-HBM metrics ==========
+        self.counter_num_memory_to_hbm_requests = self._create_counter(
+            name="lmcache:num_memory_to_hbm_requests",
+            documentation="Total number of KVCache memory-to-HBM load requests",
+            labelnames=labelnames,
+        )
+        self.counter_num_memory_to_hbm_tokens = self._create_counter(
+            name="lmcache:num_memory_to_hbm_tokens",
+            documentation="Total number of tokens loaded from memory to HBM",
+            labelnames=labelnames,
+        )
+        self.histogram_time_to_memory_to_hbm = self._create_histogram(
+            name="lmcache:time_to_memory_to_hbm",
+            documentation="Time to load KVCache from memory to HBM (seconds)",
+            labelnames=labelnames,
+            buckets=[
+                0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1,
+                0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
+            ],
+        )
+        self.histogram_memory_to_hbm_speed = self._create_histogram(
+            name="lmcache:memory_to_hbm_speed",
+            documentation="Load speed of KVCache from memory to HBM (tokens/sec)",
+            labelnames=labelnames,
+            buckets=[
+                1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
+                4096, 8192, 16384, 32768, 65536,
+            ],
+        )
+
         self._dynamic_metrics(labelnames)
-
-        # Thread pool monitoring metrics
-        self.gauge_thread_pool_active_threads = self._gauge_cls(
-            name="lmcache:thread_pool_active_threads",
-            documentation="Number of active threads in thread pool",
-            labelnames=labelnames + ["pool_name"],  # Add pool_name label
-            multiprocess_mode="sum",  # Sum across processes
-        )
-
-        self.gauge_thread_pool_queue_size = self._gauge_cls(
-            name="lmcache:thread_pool_queue_size",
-            documentation="Number of tasks waiting in thread pool queue",
-            labelnames=labelnames + ["pool_name"],
-            multiprocess_mode="sum",
-        )
-
-        self.gauge_thread_pool_utilization = self._gauge_cls(
-            name="lmcache:thread_pool_utilization",
-            documentation="Thread pool utilization (active/max_workers)",
-            labelnames=labelnames + ["pool_name"],
-            multiprocess_mode="livemostrecent",
-        )
 
     def _dynamic_metrics(self, labelnames):
         """
@@ -1730,9 +1711,15 @@ class PrometheusLogger:
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         ).labels(**self.labels)
-        self.interval_get_blocking_failed_count = self._gauge_cls(
-            name="lmcache:interval_get_blocking_failed_count",
-            documentation="The number of interval get blocking failed",
+        self.get_blocking_failed_count = self._gauge_cls(
+            name="lmcache:get_blocking_failed_count",
+            documentation="The number of get blocking failed",
+            labelnames=labelnames,
+            multiprocess_mode="livemostrecent",
+        ).labels(**self.labels)
+        self.put_failed_count = self._gauge_cls(
+            name="lmcache:put_failed_count",
+            documentation="The number of put failed",
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         ).labels(**self.labels)
@@ -1887,18 +1874,36 @@ class PrometheusLogger:
             histogram.labels(**self.labels).observe(value)
 
     def log_prometheus(self, stats: LMCacheStats):
-
-                # ========== Report disk-to-memory metrics ==========
-        self._log_counter(self.counter_num_disk_to_memory_requests, stats.interval_disk_to_memory_requests)
-        self._log_counter(self.counter_num_disk_to_memory_tokens, stats.interval_disk_to_memory_tokens)
-        self._log_histogram(self.histogram_time_to_disk_to_memory, stats.time_to_disk_to_memory)
-        self._log_histogram(self.histogram_disk_to_memory_speed, stats.disk_to_memory_speed)
-
-        # ========== Report memory-to-HBM metrics ==========
-        self._log_counter(self.counter_num_memory_to_hbm_requests, stats.interval_memory_to_hbm_requests)
-        self._log_counter(self.counter_num_memory_to_hbm_tokens, stats.interval_memory_to_hbm_tokens)
-        self._log_histogram(self.histogram_time_to_memory_to_hbm, stats.time_to_memory_to_hbm)
-        self._log_histogram(self.histogram_memory_to_hbm_speed, stats.memory_to_hbm_speed)
+        # HCU: disk-to-memory metrics
+        self._log_counter(
+            self.counter_num_disk_to_memory_requests,
+            stats.interval_disk_to_memory_requests,
+        )
+        self._log_counter(
+            self.counter_num_disk_to_memory_tokens,
+            stats.interval_disk_to_memory_tokens,
+        )
+        self._log_histogram(
+            self.histogram_time_to_disk_to_memory, stats.time_to_disk_to_memory
+        )
+        self._log_histogram(
+            self.histogram_disk_to_memory_speed, stats.disk_to_memory_speed
+        )
+        # HCU: memory-to-HBM metrics
+        self._log_counter(
+            self.counter_num_memory_to_hbm_requests,
+            stats.interval_memory_to_hbm_requests,
+        )
+        self._log_counter(
+            self.counter_num_memory_to_hbm_tokens,
+            stats.interval_memory_to_hbm_tokens,
+        )
+        self._log_histogram(
+            self.histogram_time_to_memory_to_hbm, stats.time_to_memory_to_hbm
+        )
+        self._log_histogram(
+            self.histogram_memory_to_hbm_speed, stats.memory_to_hbm_speed
+        )
 
         self._log_counter(
             self.counter_num_retrieve_requests, stats.interval_retrieve_requests
@@ -1976,11 +1981,11 @@ class PrometheusLogger:
 
         self._log_gauge(self.gauge_local_storage_usage, stats.local_storage_usage_bytes)
 
-        self._log_histogram(self.histogram_time_to_lookup, stats.time_to_lookup) # Added: record lookup latency to Prometheus
-
         self._log_histogram(self.histogram_time_to_retrieve, stats.time_to_retrieve)
 
         self._log_histogram(self.histogram_time_to_store, stats.time_to_store)
+
+        self._log_histogram(self.histogram_time_to_lookup, stats.time_to_lookup)
 
         self._log_histogram(self.histogram_retrieve_speed, stats.retrieve_speed)
 
@@ -2053,22 +2058,6 @@ class PrometheusLogger:
             self.gauge_pinned_memory_objs_count, stats.pinned_memory_objs_count
         )
 
-        # Record thread pool metrics
-        pool_labels = {**self.labels, "pool_name": "xds-io"}
-
-        self.gauge_thread_pool_active_threads.labels(**pool_labels).set(
-            stats.thread_pool_active_threads
-        )
-        self.gauge_thread_pool_queue_size.labels(**pool_labels).set(
-            stats.thread_pool_queue_size
-        )
-
-        # Calculate utilization assuming max_workers=4
-        max_workers = 4  # Can be read from config
-        if max_workers > 0:
-            utilization = stats.thread_pool_active_threads / max_workers
-            self.gauge_thread_pool_utilization.labels(**pool_labels).set(utilization)
-
     @staticmethod
     def _metadata_to_labels(metadata: LMCacheMetadata):
         labels = {
@@ -2083,14 +2072,17 @@ class PrometheusLogger:
     _instance = None
 
     @staticmethod
-    def GetOrCreate(metadata: LMCacheMetadata) -> "PrometheusLogger":
+    def GetOrCreate(
+        metadata: LMCacheMetadata,
+        config: Optional["LMCacheEngineConfig"] = None,
+    ) -> "PrometheusLogger":
         if PrometheusLogger._instance is None:
-            PrometheusLogger._instance = PrometheusLogger(metadata)
+            PrometheusLogger._instance = PrometheusLogger(metadata, config=config)
         # assert PrometheusLogger._instance.metadata == metadata, \
         #    "PrometheusLogger instance already created with different metadata"
         if PrometheusLogger._instance.metadata != metadata:
             logger.error(
-                "PrometheusLogger instance already created with"
+                "PrometheusLogger instance already created with "
                 "different metadata. This should not happen except "
                 "in test"
             )
@@ -2111,13 +2103,51 @@ class PrometheusLogger:
         """
         return PrometheusLogger._instance
 
+    @thread_safe
+    def reset_counters(self) -> None:
+        """
+        Reset all Prometheus Counter metrics by calling clear().
+        After clearing, re-initialize with labels so metrics remain visible.
+        """
+        for counter in self._counters:
+            counter.clear()
+            # Re-initialize with labels to make metric visible again
+            counter.labels(**self.labels)
+
+    @thread_safe
+    def reset_histograms(self) -> None:
+        """
+        Reset all Prometheus Histogram metrics by calling clear().
+        After clearing, re-initialize with labels so metrics remain visible.
+        """
+        for histogram in self._histograms:
+            histogram.clear()
+            # Re-initialize with labels to make metric visible again
+            histogram.labels(**self.labels)
+
+
+def reset_observability_metrics() -> None:
+    """
+    Reset observability metrics to their initial state.
+    """
+
+    prometheus_logger = PrometheusLogger.GetInstanceOrNone()
+    if prometheus_logger is not None:
+        prometheus_logger.reset_counters()
+        prometheus_logger.reset_histograms()
+
 
 class LMCacheStatsLogger:
-    def __init__(self, metadata: LMCacheMetadata, log_interval: int):
+    def __init__(
+        self,
+        metadata: LMCacheMetadata,
+        log_interval: int,
+        config: Optional["LMCacheEngineConfig"] = None,
+    ):
         self.metadata = metadata
         self.log_interval = log_interval
         self.monitor = LMCStatsMonitor.GetOrCreate()
-        self.prometheus_logger = PrometheusLogger.GetOrCreate(metadata)
+        self.prometheus_logger = PrometheusLogger.GetOrCreate(metadata, config=config)
         self.lmc_usage_logger = ContinuousUsageContext.GetOrCreate(metadata)
         self.is_running = True
         # Event for interruptible sleep during shutdown

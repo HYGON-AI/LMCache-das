@@ -1,0 +1,27 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Native build artifacts (built from csrc/, never tracked)
+*.so
+*.o
+*.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# OS
+.DS_Store
