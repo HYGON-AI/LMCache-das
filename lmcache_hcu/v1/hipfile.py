@@ -4,8 +4,8 @@
 
 """
 HIPFile Python Binding - GPUDirect Storage API
-Used to call libhyfile.so from Python for GPU direct storage access
-Supports 4K alignment, GPU array integration, and performance statistics
+用于在 Python 中调用 libhyfile.so 进行 GPU 直接存储访问
+支持 4K 对齐、GPU 数组集成、性能统计
 """
 
 import ctypes
@@ -24,20 +24,20 @@ import threading
 logger = init_logger(__name__)
 
 # ============================================================================
-# Constant definitions
+# 常量定义
 # ============================================================================
 
 HIPFILEOP_BASE_ERR = 5000
 HIP_FILE_RDMA_REGISTER = 1
 HIP_FILE_RDMA_RELAXED_ORDERING = (1 << 1)
-ALIGNMENT_4K = 4096  # 4K alignment requirement
+ALIGNMENT_4K = 4096  # 4K 对齐要求
 
 # ============================================================================
-# Enum types
+# 枚举类型
 # ============================================================================
 
 class HIPfileOpError(IntEnum):
-    """HIPFile error codes"""
+    """HIPFile 错误码"""
     HIP_FILE_SUCCESS = 0
     HIP_FILE_DRIVER_NOT_INITIALIZED = HIPFILEOP_BASE_ERR + 1
     HIP_FILE_DRIVER_INVALID_PROPS = HIPFILEOP_BASE_ERR + 2
@@ -78,14 +78,14 @@ class HIPfileOpError(IntEnum):
 
 
 class HIPfileFileHandleType(IntEnum):
-    """File handle type"""
+    """文件句柄类型"""
     HIP_FILE_HANDLE_TYPE_OPAQUE_FD = 1
     HIP_FILE_HANDLE_TYPE_OPAQUE_WIN32 = 2
     HIP_FILE_HANDLE_TYPE_USERSPACE_FS = 3
 
 
 class HIPfileDriverStatusFlags(IntEnum):
-    """Driver status flags"""
+    """驱动状态标志"""
     HIP_FILE_LUSTRE_SUPPORTED = 0
     HIP_FILE_WEKAFS_SUPPORTED = 1
     HIP_FILE_NFS_SUPPORTED = 2
@@ -99,13 +99,13 @@ class HIPfileDriverStatusFlags(IntEnum):
 
 
 class HIPfileOpcode(IntEnum):
-    """Batch operation type"""
+    """批量操作类型"""
     HIPFILE_READ = 0
     HIPFILE_WRITE = 1
 
 
 class HIPfileStatus(IntEnum):
-    """Batch operation status"""
+    """批量操作状态"""
     HIPFILE_WAITING = 0x000001
     HIPFILE_PENDING = 0x000002
     HIPFILE_INVALID = 0x000004
@@ -116,11 +116,11 @@ class HIPfileStatus(IntEnum):
 
 
 # ============================================================================
-# C structure definitions
+# C 结构体定义
 # ============================================================================
 
 class HIPfileError_t(Structure):
-    """Error structure"""
+    """错误结构体"""
     _fields_ = [
         ("err", c_int),
         ("hip_err", c_int)
@@ -128,7 +128,7 @@ class HIPfileError_t(Structure):
 
 
 class HYFSProps(Structure):
-    """HYFS driver attributes"""
+    """HYFS 驱动属性"""
     _fields_ = [
         ("major_version", c_uint),
         ("minor_version", c_uint),
@@ -140,7 +140,7 @@ class HYFSProps(Structure):
 
 
 class HIPfileDrvProps_t(Structure):
-    """Driver attributes"""
+    """驱动属性"""
     _fields_ = [
         ("hyfs", HYFSProps),
         ("fflags", c_uint),
@@ -153,7 +153,7 @@ class HIPfileDrvProps_t(Structure):
 
 
 class FileHandleUnion(Union):
-    """File handle union"""
+    """文件句柄联合体"""
     _fields_ = [
         ("fd", c_int),
         ("handle", c_void_p)
@@ -161,7 +161,7 @@ class FileHandleUnion(Union):
 
 
 class HIPfileDescr_t(Structure):
-    """File descriptor"""
+    """文件描述符"""
     _fields_ = [
         ("type", c_int),
         ("handle", FileHandleUnion),
@@ -170,7 +170,7 @@ class HIPfileDescr_t(Structure):
 
 
 class BatchParams(Structure):
-    """Batch operation parameters"""
+    """批量操作参数"""
     _fields_ = [
         ("devPtr_base", c_void_p),
         ("file_offset", c_ulonglong),
@@ -180,14 +180,14 @@ class BatchParams(Structure):
 
 
 class ParamsUnion(Union):
-    """Parameter union"""
+    """参数联合体"""
     _fields_ = [
         ("batch", BatchParams)
     ]
 
 
 class HIPfileIOParams_t(Structure):
-    """IO parameters"""
+    """IO 参数"""
     _fields_ = [
         ("mode", c_int),
         ("u", ParamsUnion),
@@ -198,7 +198,7 @@ class HIPfileIOParams_t(Structure):
 
 
 class HIPfileIOEvents_t(Structure):
-    """IO event"""
+    """IO 事件"""
     _fields_ = [
         ("cookie", c_void_p),
         ("status", c_int),
@@ -207,45 +207,45 @@ class HIPfileIOEvents_t(Structure):
 
 
 # ============================================================================
-# Statistics
+# 统计信息
 # ============================================================================
 
 @dataclass
 class IOStats:
-    """IO Statistics"""
+    """IO 统计信息"""
     total_bytes: int = 0
     total_time: float = 0.0
     num_operations: int = 0
 
     @property
     def throughput_mbps(self) -> float:
-        """Throughput in MB/s"""
+        """吞吐量（MB/s）"""
         if self.total_time == 0:
             return 0.0
         return (self.total_bytes / (1024 * 1024)) / self.total_time
 
     @property
     def avg_latency_ms(self) -> float:
-        """Average latency in milliseconds"""
+        """平均延迟（毫秒）"""
         if self.num_operations == 0:
             return 0.0
         return (self.total_time / self.num_operations) * 1000
 
     def reset(self):
-        """Reset statistics"""
+        """重置统计"""
         self.total_bytes = 0
         self.total_time = 0.0
         self.num_operations = 0
 
 
 # ============================================================================
-# Exception classes
+# 异常类
 # ============================================================================
 
 class HIPfileException(Exception):
-    """HIPFile Exception classes"""
+    """HIPFile 异常类"""
 
-    # Error message mapping
+    # 错误消息映射
     ERROR_MESSAGES = {
         HIPfileOpError.HIP_FILE_SUCCESS: "hipfile success",
         HIPfileOpError.HIP_FILE_DRIVER_NOT_INITIALIZED: "hyfs driver is not loaded",
@@ -289,7 +289,7 @@ class HIPfileException(Exception):
         self.error_code = error.err
         self.hip_error = error.hip_err
         
-        # Get detailed error message
+        # 获取详细错误消息
         print(error.err)
         if message:
             self.message = message
@@ -309,18 +309,18 @@ class HIPfileException(Exception):
 
 
 # ============================================================================
-# HIPFile library wrapper class
+# HIPFile 库封装类
 # ============================================================================
 
 class HIPFileLib:
-    """libhyfile.so library wrapper"""
+    """libhyfile.so 库封装"""
 
     def __init__(self, lib_path: Optional[str] = None):
         """
-        Initialize the HIPFile library
+        初始化 HIPFile 库
 
         Args:
-            lib_path: path to libhyfile.so; automatically searched when None
+            lib_path: libhyfile.so 的路径，如果为 None 则自动搜索
         """
         if lib_path is None:
             possible_paths = [
@@ -342,7 +342,7 @@ class HIPFileLib:
         # self.logger = logging.getLogger("hipfile.lib")
 
     def _setup_functions(self):
-        """Set function signatures"""
+        """设置函数签名"""
 
         # hipFileDriverOpen
         self._lib.hipFileDriverOpen.argtypes = []
@@ -393,7 +393,7 @@ class HIPFileLib:
 
 
     def driver_open(self):
-        """Open driver"""
+        """打开驱动"""
         logger.info("Opening HIPFile driver...")
         err = self._lib.hipFileDriverOpen()
         if err.err != HIPfileOpError.HIP_FILE_SUCCESS:
@@ -401,7 +401,7 @@ class HIPFileLib:
         logger.info("HIPFile driver opened successfully")
 
     def driver_close(self):
-        """Close driver"""
+        """关闭驱动"""
         logger.info("Closing HIPFile driver...")
         err = self._lib.hipFileDriverClose_v2()
         if err.err != HIPfileOpError.HIP_FILE_SUCCESS:
@@ -410,26 +410,26 @@ class HIPFileLib:
 
 
     def set_poll_mode(self, poll: bool, threshold_kb: int):
-        """Set polling mode"""
+        """设置轮询模式"""
         err = self._lib.hipFileDriverSetPollMode(poll, threshold_kb)
         if err.err != HIPfileOpError.HIP_FILE_SUCCESS:
             raise HIPfileException(err, "Failed to set poll mode")
 
 
     def set_max_cache_size(self, size_kb: int):
-        """Set maximum cache size"""
+        """设置最大缓存大小"""
         err = self._lib.hipFileDriverSetMaxCacheSize(size_kb)
         if err.err != HIPfileOpError.HIP_FILE_SUCCESS:
             raise HIPfileException(err, "Failed to set max cache size")
 
     def set_max_pinned_mem_size(self, size_kb: int):
-        """Set maximum pinned memory size"""
+        """设置最大固定内存大小"""
         err = self._lib.hipFileDriverSetMaxPinnedMemSize(size_kb)
         if err.err != HIPfileOpError.HIP_FILE_SUCCESS:
             raise HIPfileException(err, "Failed to set max pinned memory size")
 
     def register_file_handle(self, fd: int) -> c_void_p:
-        """Register file handle"""
+        """注册文件句柄"""
         descr = HIPfileDescr_t()
         descr.type = HIPfileFileHandleType.HIP_FILE_HANDLE_TYPE_OPAQUE_FD
         descr.handle.fd = fd
@@ -443,25 +443,25 @@ class HIPFileLib:
         return fh
 
     def deregister_file_handle(self, fh: c_void_p):
-        """Deregister file handle"""
+        """注销文件句柄"""
         self._lib.hipFileHandleDeregister(fh)
 
     def register_buffer(self, dev_ptr: int, size: int, 
                        flags: int = HIP_FILE_RDMA_REGISTER):
-        """Register device memory buffer"""
+        """注册设备内存缓冲区"""
         err = self._lib.hipFileBufRegister(c_void_p(dev_ptr), size, flags)
         if err.err != HIPfileOpError.HIP_FILE_SUCCESS:
             raise HIPfileException(err, f"Failed to register buffer (ptr={hex(dev_ptr)})")
 
     def deregister_buffer(self, dev_ptr: int):
-        """Deregister device memory buffer"""
+        """注销设备内存缓冲区"""
         err = self._lib.hipFileBufDeregister(c_void_p(dev_ptr))
         if err.err != HIPfileOpError.HIP_FILE_SUCCESS:
             raise HIPfileException(err, f"Failed to deregister buffer (ptr={hex(dev_ptr)})")
 
     def read(self, fh: c_void_p, dev_ptr: int, size: int,
              file_offset: int = 0, dev_offset: int = 0) -> int:
-        """Read from file to device memory"""
+        """从文件读取到设备内存"""
         ret = self._lib.hipFileRead(
             fh, c_void_p(dev_ptr), size, file_offset, dev_offset
         )
@@ -475,7 +475,7 @@ class HIPFileLib:
 
     def write(self, fh: c_void_p, dev_ptr: int, size: int,
               file_offset: int = 0, dev_offset: int = 0) -> int:
-        """Write from device memory to file"""
+        """从设备内存写入到文件"""
         ret = self._lib.hipFileWrite(
             fh, c_void_p(dev_ptr), size, file_offset, dev_offset
         )
@@ -489,20 +489,20 @@ class HIPFileLib:
 
 
 # ============================================================================
-# HIPFile high-level wrapper class
+# HIPFile 高级封装类
 # ============================================================================
 
 class HIPFile:
     """
-    HIPFile high-level wrapper class
+    HIPFile 高级封装类
     """
     _lib_instance = None
     _driver_opened = False
-    _global_registered_buffers = {}  # Globally registered buffers {base_ptr: (size, refcount)}
+    _global_registered_buffers = {}  # 全局注册的缓冲区 {base_ptr: (size, refcount)}
 
-    _global_stats_lock = threading.Lock()  # Lock protecting global statistics
-    global_read_stats = IOStats()          # Global read statistics
-    global_write_stats = IOStats()         # Global write statistics
+    _global_stats_lock = threading.Lock()  # 保护全局统计的锁
+    global_read_stats = IOStats()          # 全局读统计
+    global_write_stats = IOStats()         # 全局写统计
 
     _periodic_logger_thread: Optional[threading.Thread] = None
     _stop_logging = threading.Event()
@@ -517,17 +517,17 @@ class HIPFile:
                  auto_register_buffer: bool = False,
                  skip_buffer_registration: bool = False):
         """
-        Initialize HIPFile object
+        初始化 HIPFile 对象
         Args:
-            filepath: File path
-            mode: Open mode ('r', 'w', 'r+', 'a')
-            lib_path: libhyfile.so path; automatically searched when None
-            enable_stats: Whether to enable performance statistics
-            check_alignment: Whether to check 4K alignment
-            auto_register_buffer: Whether to automatically register buffers on first use
-            skip_buffer_registration: Whether to skip buffer registration checks
+            filepath: 文件路径
+            mode: 打开模式 ('r', 'w', 'r+', 'a')
+            lib_path: libhyfile.so 路径（None 则自动搜索）
+            enable_stats: 是否启用性能统计
+            check_alignment: 是否检查 4K 对齐
+            auto_register_buffer: 是否自动注册缓冲区（首次使用时）
+            skip_buffer_registration: 是否跳过缓冲区注册检查
         """
-        # Initialize library instance
+        # 初始化库实例
         if HIPFile._lib_instance is None:
             HIPFile._lib_instance = HIPFileLib(lib_path)
 
@@ -537,45 +537,50 @@ class HIPFile:
         self.fd = None
         self.fh = None
         
-        # Buffer management
+        # 缓冲区管理
         self._registered_buffers = set()
         self.auto_register_buffer = auto_register_buffer
         self.skip_buffer_registration = skip_buffer_registration
         
-        # Performance statistics
+        # 性能统计
         self.enable_stats = enable_stats
         self.read_stats = IOStats()
         self.write_stats = IOStats()
+        self.file_open_time = 0.0
+        self.handle_register_time = 0.0
+        self.handle_deregister_time = 0.0
+        self.file_close_time = 0.0
+        self.handle_open_count = 0
         
-        # Alignment check
+        # 对齐检查
         self.check_alignment = check_alignment
         self.alignment = 4096
 
-        # # Logging
+        # # 日志
         # self.logger = logging.getLogger(f"hipfile.{os.path.basename(filepath)}")
 
     def __enter__(self):
-        """Context manager entry"""
+        """上下文管理器入口"""
         self.open()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
+        """上下文管理器退出"""
         self.close()
         return False
 
     def open(self):
         """
-        Open file
-        Automatically handle driver initialization and file handle registration
+        打开文件
+        自动处理驱动初始化和文件句柄注册
         """
-        # Open the driver if it is not already open
+        # 打开驱动（如果尚未打开）
         if not HIPFile._driver_opened:
             self.lib.driver_open()
             HIPFile._driver_opened = True
 
-        # Build open flags
-        flags = os.O_DIRECT  # O_DIRECT is required
+        # 构建打开标志
+        flags = os.O_DIRECT  # 必须使用 O_DIRECT
         if self.mode == 'r':
             flags |= os.O_RDONLY
         elif self.mode == 'w':
@@ -587,48 +592,101 @@ class HIPFile:
         else:
             raise ValueError(f"Unsupported mode: {self.mode}")
 
-        # Open file
-        self.fd = os.open(self.filepath, flags, 0o644)
+        # 打开文件
+        started = time.perf_counter() if self.enable_stats else 0.0
+        try:
+            self.fd = os.open(self.filepath, flags, 0o644)
+        finally:
+            if self.enable_stats:
+                self.file_open_time += time.perf_counter() - started
         logger.debug(f"Opened file {self.filepath} with fd={self.fd}")
         
-        # Register file handle
-        self.fh = self.lib.register_file_handle(self.fd)
+        # 注册文件句柄
+        started = time.perf_counter() if self.enable_stats else 0.0
+        try:
+            self.fh = self.lib.register_file_handle(self.fd)
+            if self.enable_stats:
+                self.handle_open_count += 1
+        except BaseException:
+            # __enter__ failures do not invoke __exit__. Close the OS file here
+            # so a failed HyFile handle registration cannot leak descriptors.
+            os.close(self.fd)
+            self.fd = None
+            raise
+        finally:
+            if self.enable_stats:
+                self.handle_register_time += time.perf_counter() - started
         logger.debug(f"Registered file handle: {self.fh}")
 
     def close(self):
         """
-        Close file
+        关闭文件
         
-        Automatically deregister all buffers and file handles
+        自动注销所有缓冲区和文件句柄
         """
-        # Deregister all buffers
+        # 注销所有缓冲区
         for dev_ptr in list(self._registered_buffers):
             try:
                 self.deregister_buffer(dev_ptr)
             except Exception as e:
                 logger.warning(f"Failed to deregister buffer {hex(dev_ptr)}: {e}")
 
-        # Deregister file handle
+        # 注销文件句柄
+        deregister_error = None
         if self.fh is not None:
-            self.lib.deregister_file_handle(self.fh)
-            logger.debug(f"Deregistered file handle: {self.fh}")
-            self.fh = None
+            started = time.perf_counter() if self.enable_stats else 0.0
+            try:
+                self.lib.deregister_file_handle(self.fh)
+                logger.debug(f"Deregistered file handle: {self.fh}")
+            except BaseException as exc:
+                deregister_error = exc
+            finally:
+                if self.enable_stats:
+                    self.handle_deregister_time += time.perf_counter() - started
+                self.fh = None
 
-        # Close file descriptor
+        # 关闭文件描述符
         if self.fd is not None:
-            os.close(self.fd)
-            logger.debug(f"Closed file descriptor: {self.fd}")
-            self.fd = None
+            started = time.perf_counter() if self.enable_stats else 0.0
+            try:
+                os.close(self.fd)
+                logger.debug(f"Closed file descriptor: {self.fd}")
+            finally:
+                if self.enable_stats:
+                    self.file_close_time += time.perf_counter() - started
+                self.fd = None
+        if deregister_error is not None:
+            raise deregister_error
+
+    def get_profile(self) -> Dict[str, float | int]:
+        """Return lifecycle and DMA counters collected for this handle.
+
+        Returns:
+            Timings in seconds plus handle, call, and byte counters. Values
+            remain zero when the handle was created with statistics disabled.
+        """
+        return {
+            "file_open_seconds": self.file_open_time,
+            "handle_register_seconds": self.handle_register_time,
+            "dma_seconds": self.read_stats.total_time + self.write_stats.total_time,
+            "handle_deregister_seconds": self.handle_deregister_time,
+            "file_close_seconds": self.file_close_time,
+            "handle_open_count": self.handle_open_count,
+            "read_calls": self.read_stats.num_operations,
+            "write_calls": self.write_stats.num_operations,
+            "bytes_read": self.read_stats.total_bytes,
+            "bytes_written": self.write_stats.total_bytes,
+        }
 
     def _check_alignment(self, ptr: int, size: int, offset: int):
         """
-        Check 4K alignment
+        检查 4K 对齐
         Args:
-            ptr: Memory pointer
-            size: Data size
-            offset: Offset
+            ptr: 内存指针
+            size: 数据大小
+            offset: 偏移量
         Raises:
-            ValueError: If not aligned
+            ValueError: 如果未对齐
         """
         if not self.check_alignment:
             return
@@ -651,42 +709,42 @@ class HIPFile:
     @staticmethod
     def align_up(value: int, alignment: int = ALIGNMENT_4K) -> int:
         """
-        Align up to the specified boundary
+        向上对齐到指定边界
         Args:
-            value: Value to align
-            alignment: Alignment boundary, default 4K
+            value: 要对齐的值
+            alignment: 对齐边界（默认 4K）
             
         Returns:
-            Aligned value
+            对齐后的值
         """
         return ((value + alignment - 1) // alignment) * alignment
 
     @staticmethod
     def align_down(value: int, alignment: int = ALIGNMENT_4K) -> int:
         """
-        Align down to the specified boundary
+        向下对齐到指定边界
         
         Args:
-            value: Value to align
-            alignment: Alignment boundary, default 4K
+            value: 要对齐的值
+            alignment: 对齐边界（默认 4K）
             
         Returns:
-            Aligned value
+            对齐后的值
         """
         return (value // alignment) * alignment
 
     def register_buffer(self, dev_ptr: int, size: int, 
                        flags: int = HIP_FILE_RDMA_REGISTER):
         """
-        Register device buffer
+        注册设备缓冲区
         Args:
-            dev_ptr: Device pointer address
-            size: Buffer size in bytes
-            flags: Registration flags
+            dev_ptr: 设备指针地址
+            size: 缓冲区大小（字节）
+            flags: 注册标志
             
         Note:
-            - Pre-registering buffers is recommended for better performance
-            - Buffer address and size should be 4K aligned
+            - 建议预先注册缓冲区以提升性能
+            - 缓冲区地址和大小应该 4K 对齐
         """
         if dev_ptr in self._registered_buffers:
             logger.warning(f"Buffer {hex(dev_ptr)} already registered")
@@ -698,10 +756,10 @@ class HIPFile:
 
     def deregister_buffer(self, dev_ptr: int):
         """
-        Deregister device buffer
+        注销设备缓冲区
         
         Args:
-            dev_ptr: Device pointer address
+            dev_ptr: 设备指针地址
         """
         if dev_ptr not in self._registered_buffers:
             logger.warning(f"Buffer {hex(dev_ptr)} not registered")
@@ -715,17 +773,17 @@ class HIPFile:
     def register_global_buffer(cls, dev_ptr: int, size: int, 
                               flags: int = HIP_FILE_RDMA_REGISTER):
         """
-        Globally register buffer (class method)
+        全局注册缓冲区（类方法）
         
         Args:
-            dev_ptr: Device pointer base address
-            size: Total buffer size
-            flags: Registration flags
+            dev_ptr: 设备指针基地址
+            size: 缓冲区总大小
+            flags: 注册标志
             
         Note:
-            - Globally registered buffers can be used by all HIPFile instances
-            - Reference counting is supported; registering the same buffer multiple times increments the reference count
-            - Must be called after opening the driver
+            - 全局注册的缓冲区可以被所有 HIPFile 实例使用
+            - 支持引用计数，多次注册同一缓冲区会增加引用计数
+            - 必须在打开驱动后调用
         """
         if cls._lib_instance is None:
             cls._lib_instance = HIPFileLib()
@@ -735,9 +793,9 @@ class HIPFile:
                 "Driver not opened. Call HIPFile.init_driver() first."
             )
         
-        # Check whether already registered
+        # 检查是否已注册
         if dev_ptr in cls._global_registered_buffers:
-            # Increment reference count
+            # 增加引用计数
             old_size, refcount = cls._global_registered_buffers[dev_ptr]
             if old_size != size:
                 raise ValueError(
@@ -750,7 +808,7 @@ class HIPFile:
             )
             return
         
-        # Register new buffer
+        # 注册新缓冲区
         cls._lib_instance.register_buffer(dev_ptr, size, flags)
         cls._global_registered_buffers[dev_ptr] = (size, 1)
         
@@ -761,14 +819,14 @@ class HIPFile:
     @classmethod
     def deregister_global_buffer(cls, dev_ptr: int):
         """
-        Globally deregister buffer (class method)
+        全局注销缓冲区（类方法）
         
         Args:
-            dev_ptr: Device pointer base address
+            dev_ptr: 设备指针基地址
             
         Note:
-            - Reference counting is supported; deregister only when the reference count reaches 0
-            - Usually called before program exit
+            - 支持引用计数，只有当引用计数为 0 时才真正注销
+            - 通常在程序退出前调用
         """
         if dev_ptr not in cls._global_registered_buffers:
             logger.warning(
@@ -779,14 +837,14 @@ class HIPFile:
         size, refcount = cls._global_registered_buffers[dev_ptr]
         
         if refcount > 1:
-            # Decrement reference count
+            # 减少引用计数
             cls._global_registered_buffers[dev_ptr] = (size, refcount - 1)
             logger.debug(
                 f"Decreased refcount for buffer {hex(dev_ptr)} to {refcount - 1}"
             )
             return
         
-        # Reference count is 1; actually deregister
+        # 引用计数为 1，真正注销
         if cls._lib_instance is not None:
             cls._lib_instance.deregister_buffer(dev_ptr)
         
@@ -799,19 +857,19 @@ class HIPFile:
     @classmethod
     def is_buffer_registered(cls, dev_ptr: int) -> bool:
         """
-        Check whether the buffer is globally registered
+        检查缓冲区是否已全局注册
         
         Args:
-            dev_ptr: Device pointer, either a base address or a subregion address
+            dev_ptr: 设备指针（可以是基地址或子区域地址）
             
         Returns:
-            Whether registered
+            是否已注册
         """
-        # Check exact match
+        # 检查精确匹配
         if dev_ptr in cls._global_registered_buffers:
             return True
         
-        # Check whether it is within a registered buffer range
+        # 检查是否在某个已注册缓冲区的范围内
         for base_ptr, (size, _) in cls._global_registered_buffers.items():
             if base_ptr <= dev_ptr < base_ptr + size:
                 return True
@@ -821,13 +879,13 @@ class HIPFile:
     @classmethod
     def init_driver(cls, lib_path: Optional[str] = None):
         """
-        Initialize driver (class method)
+        初始化驱动（类方法）
         
         Args:
-            lib_path: libhyfile.so path
+            lib_path: libhyfile.so 路径
             
         Note:
-            Must be called before using global buffer registration
+            在使用全局缓冲区注册前必须调用
         """
         if cls._lib_instance is None:
             cls._lib_instance = HIPFileLib(lib_path)
@@ -838,21 +896,21 @@ class HIPFile:
 
     def _should_skip_registration(self, dev_ptr: int) -> bool:
         """
-        Determine whether buffer registration should be skipped
+        判断是否应该跳过缓冲区注册
         Args:
-            dev_ptr: Device pointer
+            dev_ptr: 设备指针
         Returns:
-            Whether to skip registration
+            是否跳过注册
         """
-        # If the skip flag is set
+        # 如果设置了跳过标志
         if self.skip_buffer_registration:
             return True
         
-        # If already registered locally
+        # 如果已在本地注册
         if dev_ptr in self._registered_buffers:
             return True
         
-        # If already registered globally
+        # 如果已全局注册
         if self.is_buffer_registered(dev_ptr):
             return True
         
@@ -861,26 +919,26 @@ class HIPFile:
     def read(self, dev_ptr: int, size: int, 
              file_offset: int = 0, dev_offset: int = 0) -> int:
         """
-        Read data from file to device memory
+        从文件读取数据到设备内存
         Args:
-            dev_ptr: Device memory base address, must be 4K aligned
-            size: Read size in bytes, must be 4K aligned
-            file_offset: File offset in bytes, must be 4K aligned
-            dev_offset: Offset relative to dev_ptr in bytes
+            dev_ptr: 设备内存基地址（必须 4K 对齐）
+            size: 读取大小（字节，必须 4K 对齐）
+            file_offset: 文件偏移量（字节，必须 4K 对齐）
+            dev_offset: 相对于 dev_ptr 的偏移量（字节）
         Returns:
-            Actual number of bytes read
+            实际读取的字节数
         Note:
-            - If skip_buffer_registration=True is set, assume the buffer is pre-registered
-            - Supports using subregions of globally registered buffers
+            - 如果设置了 skip_buffer_registration=True，则假设缓冲区已预注册
+            - 支持使用全局注册缓冲区的子区域
         """
         if self.fh is None:
             raise RuntimeError("File not opened. Use 'with HIPFile(...)' or call open()")
 
-        # Alignment check
+        # 对齐检查
         self._check_alignment(dev_ptr, size, file_offset)
         self._check_alignment(dev_ptr + dev_offset, 0, 0)
 
-        # Buffer registration check
+        # 缓冲区注册检查
         if not self._should_skip_registration(dev_ptr):
             if self.auto_register_buffer:
                 self.register_buffer(dev_ptr, size)
@@ -889,11 +947,11 @@ class HIPFile:
                     f"Buffer {hex(dev_ptr)} not registered. "
                     "Consider using skip_buffer_registration=True if pre-registered."
                 )
-        # Perform read
+        # 执行读取
         start_time = time.perf_counter() if self.enable_stats else 0
         ret = self.lib.read(self.fh, dev_ptr, size, file_offset, dev_offset)
 
-        # Update statistics
+        # 更新统计
         if self.enable_stats:
             elapsed = time.perf_counter() - start_time
             self.read_stats.total_bytes += ret
@@ -913,29 +971,29 @@ class HIPFile:
     def write(self, dev_ptr: int, size: int, 
               file_offset: int = 0, dev_offset: int = 0) -> int:
         """
-        Write data from device memory to file
+        从设备内存写入数据到文件
         
         Args:
-            dev_ptr: Device memory base address, must be 4K aligned
-            size: Write size in bytes, must be 4K aligned
-            file_offset: File offset in bytes, must be 4K aligned
-            dev_offset: Offset relative to dev_ptr in bytes
+            dev_ptr: 设备内存基地址（必须 4K 对齐）
+            size: 写入大小（字节，必须 4K 对齐）
+            file_offset: 文件偏移量（字节，必须 4K 对齐）
+            dev_offset: 相对于 dev_ptr 的偏移量（字节）
             
         Returns:
-            Actual number of bytes written
+            实际写入的字节数
             
         Note:
-            - If skip_buffer_registration=True is set, assume the buffer is pre-registered
-            - Supports using subregions of globally registered buffers
+            - 如果设置了 skip_buffer_registration=True，则假设缓冲区已预注册
+            - 支持使用全局注册缓冲区的子区域
         """
         if self.fh is None:
             raise RuntimeError("File not opened. Use 'with HIPFile(...)' or call open()")
 
-        # Alignment check
+        # 对齐检查
         self._check_alignment(dev_ptr, size, file_offset)
         self._check_alignment(dev_ptr + dev_offset, 0, 0)
 
-        # Buffer registration check
+        # 缓冲区注册检查
         if not self._should_skip_registration(dev_ptr):
             if self.auto_register_buffer:
                 self.register_buffer(dev_ptr, size)
@@ -945,11 +1003,11 @@ class HIPFile:
                     "Consider using skip_buffer_registration=True if pre-registered."
                 )
 
-        # Perform write
+        # 执行写入
         start_time = time.perf_counter() if self.enable_stats else 0
         ret = self.lib.write(self.fh, dev_ptr, size, file_offset, dev_offset)
 
-        # Update statistics
+        # 更新统计
         if self.enable_stats:
             elapsed = time.perf_counter() - start_time
             self.write_stats.total_bytes += ret
@@ -970,10 +1028,10 @@ class HIPFile:
     @classmethod
     def get_global_stats(cls) -> Dict[str, Any]:
         """
-        Get global performance statistics
+        获取全局性能统计信息
         
         Returns:
-            Dictionary containing global read/write statistics
+            包含全局读写统计的字典
         """
         with cls._global_stats_lock:
             return {
@@ -993,7 +1051,7 @@ class HIPFile:
 
     @classmethod
     def print_global_stats(cls):
-        """Print global performance statistics"""
+        """打印全局性能统计"""
         stats = cls.get_global_stats()
         print("\n" + "="*60)
         print("HIPFile Global Performance Statistics")
@@ -1014,7 +1072,7 @@ class HIPFile:
 
     @classmethod
     def reset_global_stats(cls):
-        """Reset global performance statistics (thread-safe)"""
+        """重置全局性能统计（线程安全）"""
         with cls._global_stats_lock:
             cls.global_read_stats.reset()
             cls.global_write_stats.reset()
@@ -1023,28 +1081,28 @@ class HIPFile:
     @classmethod
     def start_periodic_logging(cls, interval: int = 300):
         """
-        Start periodic global statistics logging every interval seconds in a background thread
+        启动每隔 interval 秒的全局统计日志输出（后台线程）
         
         Args:
-            interval: Output interval in seconds, default 300 or 5 minutes
+            interval: 输出间隔（秒，默认 300，即 5 分钟）
             
         Note:
-            - Start only once; subsequent calls have no effect.
-            - Use logger.info for output.
-            - The thread is a daemon thread and stops automatically when the program exits.
+            - 只启动一次，后续调用无效。
+            - 使用 logger.info 输出。
+            - 线程为守护线程，程序退出时自动停止。
         """
         if cls._periodic_logger_thread is not None and cls._periodic_logger_thread.is_alive():
             logger.warning("Periodic logging already started")
             return
 
-        cls._stop_logging.clear()  # Reset stop flag
+        cls._stop_logging.clear()  # 重置停止标志
 
         def _log_worker():
             while not cls._stop_logging.is_set():
                 time.sleep(interval)
                 if cls._stop_logging.is_set():
                     break
-                # Get global statistics and write them to the log
+                # 获取全局统计并日志输出
                 stats = cls.get_global_stats()
                 logger.info(
                     f"Global I/O Stats - Read: {stats['read']['total_bytes']} bytes, "
@@ -1058,16 +1116,16 @@ class HIPFile:
         logger.info(f"Started periodic global stats logging every {interval} seconds")
 
     @classmethod
-    def stop_periodic_logging(cls, interval: int = 300):
+    def stop_periodic_logging(cls):
         """
-        Stop periodic logging
+        停止定时日志输出
         
         Note:
-            Optional; usually called before program exit.
+            可选调用，通常在程序退出前使用。
         """
         if cls._periodic_logger_thread is not None:
             cls._stop_logging.set()
-            cls._periodic_logger_thread.join(timeout=interval + 1)  # Wait for the thread to finish
+            cls._periodic_logger_thread.join(timeout=interval + 1)  # 等待线程结束
             logger.info("Stopped periodic global stats logging")
             cls._periodic_logger_thread = None
 
@@ -1075,10 +1133,10 @@ class HIPFile:
     @classmethod
     def close_driver(cls):
         """
-        Close driver (class method)
+        关闭驱动（类方法）
         
         Note:
-            Manual calls are usually unnecessary; it closes automatically on program exit
+            通常不需要手动调用，程序退出时会自动关闭
         """
         if cls._driver_opened and cls._lib_instance is not None:
             cls._lib_instance.driver_close()
@@ -1086,14 +1144,14 @@ class HIPFile:
 
 
 # ============================================================================
-# Driver context manager
+# 驱动上下文管理器
 # ============================================================================
 
 class HIPFileDriver:
     """
-    HIPFile Driver context manager
+    HIPFile 驱动上下文管理器
     
-    Used to explicitly manage driver lifecycle and configuration
+    用于显式管理驱动生命周期和配置
     
     Examples:
         >>> with HIPFileDriver() as driver:
@@ -1105,25 +1163,23 @@ class HIPFileDriver:
 
     def __init__(self, lib_path: Optional[str] = None):
         """
-        Initialize driver manager
+        初始化驱动管理器
         
         Args:
-            lib_path: libhyfile.so path
+            lib_path: libhyfile.so 路径
         """
         self.lib = HIPFileLib(lib_path)
         self._opened = False
 
     def __enter__(self):
-        """Open driver"""
+        """打开驱动"""
         self.lib.driver_open()
         self._opened = True
         return self.lib
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Close driver"""
+        """关闭驱动"""
         if self._opened:
             self.lib.driver_close()
             self._opened = False
         return False
-
-

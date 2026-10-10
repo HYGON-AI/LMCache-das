@@ -120,7 +120,7 @@ prepare_sandbox() {
 
     git clone --quiet --no-hardlinks "${UPSTREAM_INPUT}" "${UPSTREAM_ROOT}"
     git -C "${UPSTREAM_ROOT}" checkout --quiet --detach \
-        fc031d471a566edb6d49a86c9116cc23cfb04111
+        9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e
 
     if [[ -d "${TEST_TOOL_INPUT}/.git" ]]; then
         git clone --quiet --no-hardlinks "${TEST_TOOL_INPUT}" "${TEST_TOOL_ROOT}"

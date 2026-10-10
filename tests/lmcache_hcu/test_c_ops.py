@@ -10,6 +10,7 @@ from __future__ import annotations
 
 # Standard
 import importlib
+from enum import IntEnum
 import sys
 from types import ModuleType
 from unittest.mock import MagicMock
@@ -25,6 +26,18 @@ def _install_fake_hcu_c_ops(monkeypatch) -> ModuleType:
     """Install a fake HCU native c_ops module before importing the proxy."""
     lmcache_hcu_pkg = ensure_module(monkeypatch, "lmcache_hcu")
     hcu_c_ops = ModuleType("lmcache_hcu.hcu_c_ops")
+    class TransferDirection(IntEnum):
+        H2D = 0
+        D2H = 1
+
+    class GPUKVFormat(IntEnum):
+        NL_X_TWO_NB_BS_NH_HS = 1
+        NL_X_NB_TWO_BS_NH_HS = 2
+        NL_X_NB_BS_HS = 3
+        NL_X_NBBS_ONE_HS = 5
+
+    hcu_c_ops.TransferDirection = TransferDirection
+    hcu_c_ops.GPUKVFormat = GPUKVFormat
     for name in (
         "multi_layer_kv_transfer",
         "multi_layer_kv_transfer_asymmetric",
@@ -85,6 +98,8 @@ def test_with_proxy_mem_kernel_symbols_use_hcu_extension(monkeypatch):
     assert imported is proxy
     assert imported.multi_layer_kv_transfer == "hcu::multi_layer_kv_transfer"
     assert imported.single_layer_kv_transfer == "hcu::single_layer_kv_transfer"
+    assert imported.TransferDirection is proxy._hcu_mem_kernels.TransferDirection
+    assert imported.GPUKVFormat is proxy._hcu_mem_kernels.GPUKVFormat
 
 
 def test_with_proxy_non_mem_kernel_symbols_fall_back_to_baseline(monkeypatch):

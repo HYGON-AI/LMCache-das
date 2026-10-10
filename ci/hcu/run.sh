@@ -20,7 +20,7 @@ readonly REPOSITORY="${GITHUB_REPOSITORY:-HYGON-AI/LMCache-das}"
 readonly BASE_IMAGE="${HCU_CI_BASE_IMAGE:-}"
 readonly BASE_IMAGE_ID="${HCU_CI_BASE_IMAGE_ID:-}"
 readonly SHARED_ROOT="${HCU_CI_SHARED_ROOT:-/ci_public/lmcache-das}"
-readonly UPSTREAM_ASSET="${HCU_CI_UPSTREAM_SOURCE:-/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/fc031d471a566edb6d49a86c9116cc23cfb04111}"
+readonly UPSTREAM_ASSET="${HCU_CI_UPSTREAM_SOURCE:-/ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e}"
 readonly MODEL_MANIFEST="${CONTROLLER_ROOT}/ci/hcu/model-test-manifest.json"
 readonly MODEL_HELPER="${CONTROLLER_ROOT}/ci/hcu/model-ci.py"
 readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
@@ -367,7 +367,7 @@ host_preflight() {
     [[ "${BASE_IMAGE_ID}" =~ ^sha256:[0-9a-f]{64}$ ]]
     [[ -d "${CHECKOUT_ROOT}/.git" && -d "${CONTROLLER_ROOT}/.git" ]]
     [[ -d "${UPSTREAM_ASSET}/.git" ]]
-    [[ "$(readlink -m -- "${UPSTREAM_ASSET}")" == "/ci_public/lmcache-das/assets/upstream/LMCache/v0.3.13/"* ]]
+    [[ "$(readlink -m -- "${UPSTREAM_ASSET}")" == "/ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/"* ]]
     [[ -e /dev/kfd && -d /dev/dri && -d /opt/hyhal ]]
     validate_visible_devices
     device_arguments >/dev/null

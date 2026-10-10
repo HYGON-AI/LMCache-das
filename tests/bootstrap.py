@@ -25,7 +25,7 @@ LOCAL_UPSTREAM_SOURCE = os.path.abspath(
         os.path.dirname(__file__),
         "..",
         "..",
-        "LMCache_0.3.13_source",
+        "LMCache_0.4.2_source",
         "LMCache",
     )
 )

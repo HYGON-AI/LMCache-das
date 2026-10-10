@@ -73,10 +73,10 @@ def test_paged_connector_from_metadata_preserves_mla_flag(monkeypatch):
     assert connector.get_shape(128) == torch.Size([1, 3, 128, 512])
 
 
-def test_paged_connector_reads_flash_attention_pa_env(monkeypatch):
-    """The HCU connector should accept VLLM_USE_FLASH_ATTN_PA during construction."""
+def test_paged_connector_reads_custom_flash_attention_env(monkeypatch):
+    """The HCU connector should read its custom attention environment flag."""
     monkeypatch.setattr(torch.cuda, "Stream", lambda: _FakeStream())
-    monkeypatch.setattr(sys.modules["vllm.envs"], "VLLM_USE_FLASH_ATTN_PA", True)
+    monkeypatch.setenv("VLLM_HCU_USE_CUSTOM_FLASH_ATTN", "true")
 
     connector = VLLMPagedMemGPUConnectorV2(
         hidden_dim_size=512,
@@ -85,8 +85,22 @@ def test_paged_connector_reads_flash_attention_pa_env(monkeypatch):
         use_mla=False,
     )
 
-    assert sys.modules["vllm.envs"].VLLM_USE_FLASH_ATTN_PA is True
-    assert connector.use_mla is False
+    assert connector.hcu_use_custom_flash_attn is True
+
+
+def test_paged_connector_custom_flash_attention_defaults_false(monkeypatch):
+    """The custom attention flag should default to disabled."""
+    monkeypatch.setattr(torch.cuda, "Stream", lambda: _FakeStream())
+    monkeypatch.delenv("VLLM_HCU_USE_CUSTOM_FLASH_ATTN", raising=False)
+
+    connector = VLLMPagedMemGPUConnectorV2(
+        hidden_dim_size=512,
+        num_layers=2,
+        use_gpu=False,
+        use_mla=False,
+    )
+
+    assert connector.hcu_use_custom_flash_attn is False
 
 
 def test_paged_connector_get_shape_uses_kv_size_for_mha_and_mla(monkeypatch):

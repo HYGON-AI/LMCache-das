@@ -1,6 +1,8 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
 """Trusted pytest support for the LMCache HCU CI environment.
 
-The upstream v0.3.13 ``lmserver_v1_process`` fixture allows only fifteen
+The upstream v0.4.2 ``lmserver_v1_process`` fixture allows only fifteen
 seconds for a server to become ready.  Importing the HCU runtime in the pinned
 test image takes about twenty seconds, so the fixture terminates a healthy
 server before it can listen.  This plugin keeps the test semantics unchanged

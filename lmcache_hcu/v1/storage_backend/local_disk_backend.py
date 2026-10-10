@@ -7,6 +7,7 @@ import os
 import time
 
 from lmcache.logging import init_logger
+from lmcache.v1.cache_controller.message import OpType
 
 logger = init_logger(__name__)
 
@@ -51,6 +52,7 @@ def _hcu_load_bytes_from_disk(self, key, path, dtype, shape, fmt):
     buffer = memory_obj.byte_array
     if self.read_file(key, buffer, path):
         return memory_obj
+    memory_obj.ref_count_down()
     return None
 
 
@@ -66,12 +68,12 @@ def _hcu_read_file(self, key, buffer, path):
     try:
         if not fblock_aligned or not self.use_odirect:
             with open(path, "rb") as f:
-                f.readinto(buffer)
+                bytes_read = f.readinto(buffer)
         else:
             fd = os.open(path, os.O_RDONLY | os.O_DIRECT)
             try:
                 with os.fdopen(fd, "rb", buffering=0) as fdo:
-                    fdo.readinto(buffer)
+                    bytes_read = fdo.readinto(buffer)
             except Exception:
                 try:
                     os.close(fd)
@@ -80,42 +82,40 @@ def _hcu_read_file(self, key, buffer, path):
                 raise
     except FileNotFoundError:
         logger.warning(f"File not found on disk: {path}")
-        with self.disk_lock:
-            if self.dict.get(key, None):
-                self.dict.pop(key)
+        self.remove(key)
         return False
     except PermissionError:
         logger.warning(
             f"Failed to read from disk (permission denied): {path}"
         )
-        with self.disk_lock:
-            if self.dict.get(key, None):
-                self.dict.pop(key)
+        self.remove(key)
         return False
     except IsADirectoryError:
         logger.warning(
             f"Failed to read from disk (path is a directory): {path}"
         )
-        with self.disk_lock:
-            if self.dict.get(key, None):
-                self.dict.pop(key)
+        self.remove(key)
         return False
     except OSError as e:
         logger.warning(
             f"Failed to read from disk (OS error: {e}): {path}"
         )
-        with self.disk_lock:
-            if self.dict.get(key, None):
-                self.dict.pop(key)
+        self.remove(key)
         return False
     except Exception as e:
         logger.warning(
             f"Unexpected error reading from disk "
             f"({type(e).__name__}: {e}): {path}"
         )
-        with self.disk_lock:
-            if self.dict.get(key, None):
-                self.dict.pop(key)
+        self.remove(key)
+        return False
+
+    if bytes_read != size:
+        logger.warning(
+            f"Short read for disk cache {path}: "
+            f"expected {size} bytes, got {bytes_read}"
+        )
+        self.remove(key)
         return False
     return True
 
@@ -276,10 +276,16 @@ def _hcu_batched_async_load_bytes_from_disk(
     """
 
     logger.debug("Executing `async_load_bytes` from disk.")
-    # TODO (Jiayi): handle the case where loading fails.
+    loaded = []
+    failed = False
     for path, key, mem_obj in zip(paths, keys, memory_objs, strict=False):
-        buffer = mem_obj.byte_array
-        if not self.read_file(key, buffer, path):
+        if failed or not self.read_file(key, mem_obj.byte_array, path):
+            failed = True
+            with self.disk_lock:
+                if (meta := self.dict.get(key)) is not None:
+                    meta.unpin()
+            mem_obj.unpin()
+            mem_obj.ref_count_down()
             continue
 
         # TODO(Jiayi): Please recover the metadata in a more
@@ -290,8 +296,61 @@ def _hcu_batched_async_load_bytes_from_disk(
         self.disk_lock.acquire()
         self.dict[key].unpin()
         self.disk_lock.release()
+        loaded.append(mem_obj)
 
-    return memory_objs
+    return loaded
+
+
+def _hcu_remove(self, key, force=True):
+    """Remove a key from the disk cache.
+
+    ``force=True`` debits both ``current_cache_size`` and ``usage``; the
+    eviction path passes ``force=False`` and has already debited
+    ``current_cache_size`` itself, so only ``usage`` is debited here.
+    """
+    if force:
+        self.disk_lock.acquire()
+    try:
+        meta = self.dict.get(key, None)
+        if meta is None:
+            return False
+
+        path = meta.path
+        if force:
+            self.current_cache_size -= meta.size
+        if meta.shape is not None and meta.dtype is not None:
+            payload_size = meta.shape.numel() * meta.dtype.itemsize
+        else:
+            payload_size = meta.size
+        self.usage -= payload_size
+        self.stats_monitor.update_local_storage_usage(self.usage)
+
+        self.dict.pop(key)
+    finally:
+        if force:
+            self.disk_lock.release()
+
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+    if force:
+        self.cache_policy.update_on_force_evict(key)
+
+    if self.batched_msg_sender is not None:
+        self.batched_msg_sender.add_kv_op(
+            op_type=OpType.EVICT,
+            key=key.chunk_hash,
+        )
+    return True
+
+
+def _hcu_close(self) -> None:
+    """Drain queued puts before closing the batched message sender."""
+    self.disk_worker.close()
+    if self.batched_msg_sender is not None:
+        self.batched_msg_sender.close()
 
 
 def patch_local_disk_backend(local_disk_backend) -> None:
@@ -306,6 +365,8 @@ def patch_local_disk_backend(local_disk_backend) -> None:
     _hcu_cleanup_partial_file._lmcache_hcu_patched = True
     _hcu_async_save_bytes_to_disk._lmcache_hcu_patched = True
     _hcu_batched_async_load_bytes_from_disk._lmcache_hcu_patched = True
+    _hcu_remove._lmcache_hcu_patched = True
+    _hcu_close._lmcache_hcu_patched = True
 
     backend_cls.get_blocking = _hcu_get_blocking
     backend_cls.load_bytes_from_disk = _hcu_load_bytes_from_disk
@@ -316,4 +377,6 @@ def patch_local_disk_backend(local_disk_backend) -> None:
     backend_cls.batched_async_load_bytes_from_disk = (
         _hcu_batched_async_load_bytes_from_disk
     )
+    backend_cls.remove = _hcu_remove
+    backend_cls.close = _hcu_close
     backend_cls._lmcache_hcu_local_disk_patched = True

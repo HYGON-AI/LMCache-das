@@ -48,8 +48,7 @@ def _hcu_wait_for_save(self: Any) -> None:
 
     original = getattr(self.__class__, "_lmcache_hcu_original_wait_for_save", None)
     if original is None:
-        # Patch not installed -- call the bound method unchanged.
-        return self.wait_for_save()
+        return None
 
     connector_metadata = self._parent._get_connector_metadata()
     original_requests = connector_metadata.requests
@@ -74,6 +73,7 @@ def _hcu_wait_for_save(self: Any) -> None:
                 len(slot_mapping),
                 len(token_ids),
             )
+            self.lmcache_engine.lookup_unpin(request.req_id)
             continue
         filtered.append(request)
 
