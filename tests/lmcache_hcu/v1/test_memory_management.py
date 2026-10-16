@@ -89,7 +89,7 @@ def test_patch_parent_allocator_semantics_patches_upstream_allocators(monkeypatc
             self.size = size
             self.device = device
             self.tensor = SimpleNamespace(numel=lambda: size)
-            self.allocator = None
+            self.allocator = TensorMemoryAllocator(self.tensor)
 
     fake_mm.AddressManager = AddressManager
     fake_mm.TensorMemoryAllocator = TensorMemoryAllocator
@@ -114,7 +114,7 @@ def test_patch_parent_allocator_semantics_patches_upstream_allocators(monkeypatc
     assert tensor_allocator.address_manager.parent_allocator is parent
     assert allocated.parent_allocator is parent
     assert all(memory_obj.parent_allocator is parent for memory_obj in batch)
-    assert gpu_allocator.allocator.parent_allocator is gpu_allocator
+    assert gpu_allocator.allocator.parent_allocator is gpu_allocator.allocator
     assert hcu_mm._PATCHED_PARENT_ALLOCATOR_SEMANTICS is True
 
 

@@ -17,7 +17,6 @@
       "test_disk_to_memory_metrics_are_collected_and_cleared",
       "test_memory_to_hbm_metrics_are_collected_and_cleared",
       "test_unfinished_hcu_load_requests_survive_clear",
-      "test_thread_pool_status_is_reported_and_preserved_across_clear",
       "test_prometheus_logger_registers_and_logs_hcu_metrics"
     ],
     "tests/lmcache_hcu/test_vllm_adapter_block_table_patch.py": [

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 # Standard
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock
 
 # Third Party
@@ -102,6 +102,7 @@ def _make_engine(**overrides):
         storage_manager=SimpleNamespace(remove=MagicMock()),
         save_only_first_rank_buffer=None,
     )
+    engine._get_req_id = MethodType(LMCacheEngine._get_req_id, engine)
     engine.__dict__.update(overrides)
     return engine
 
