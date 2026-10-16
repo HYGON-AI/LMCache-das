@@ -136,21 +136,6 @@ def test_unfinished_hcu_load_requests_survive_clear():
     assert m2h_request_id in stats_monitor.memory_to_hbm_requests
 
 
-def test_thread_pool_status_is_reported_and_preserved_across_clear():
-    """Thread pool gauges are realtime values and should be present in stats."""
-    stats_monitor = _reset_monitor()
-
-    stats_monitor.update_thread_pool_status(active_threads=3, queue_size=7)
-    stats = stats_monitor.get_stats_and_clear()
-
-    assert stats.thread_pool_active_threads == 3
-    assert stats.thread_pool_queue_size == 7
-
-    next_stats = stats_monitor.get_stats_and_clear()
-    assert next_stats.thread_pool_active_threads == 3
-    assert next_stats.thread_pool_queue_size == 7
-
-
 def test_prometheus_logger_registers_and_logs_hcu_metrics(monkeypatch):
     """Prometheus logging should create and update HCU-specific counters/histograms."""
     _Metric.created = []

@@ -98,8 +98,6 @@ def test_with_proxy_mem_kernel_symbols_use_hcu_extension(monkeypatch):
     assert imported is proxy
     assert imported.multi_layer_kv_transfer == "hcu::multi_layer_kv_transfer"
     assert imported.single_layer_kv_transfer == "hcu::single_layer_kv_transfer"
-    assert imported.TransferDirection is proxy._hcu_mem_kernels.TransferDirection
-    assert imported.GPUKVFormat is proxy._hcu_mem_kernels.GPUKVFormat
 
 
 def test_with_proxy_non_mem_kernel_symbols_fall_back_to_baseline(monkeypatch):
@@ -107,6 +105,8 @@ def test_with_proxy_non_mem_kernel_symbols_fall_back_to_baseline(monkeypatch):
     baseline = _install_fake_baseline_c_ops(monkeypatch)
     baseline.calculate_cdf = "baseline::calculate_cdf"
     baseline.get_gpu_pci_bus_id = "baseline::get_gpu_pci_bus_id"
+    baseline.TransferDirection = "baseline::TransferDirection"
+    baseline.GPUKVFormat = "baseline::GPUKVFormat"
     proxy = _fresh_proxy(monkeypatch)
     proxy._set_base_c_ops(baseline)
     monkeypatch.setitem(sys.modules, "lmcache.c_ops", proxy)
@@ -115,6 +115,8 @@ def test_with_proxy_non_mem_kernel_symbols_fall_back_to_baseline(monkeypatch):
 
     assert imported.calculate_cdf == "baseline::calculate_cdf"
     assert imported.get_gpu_pci_bus_id == "baseline::get_gpu_pci_bus_id"
+    assert imported.TransferDirection == "baseline::TransferDirection"
+    assert imported.GPUKVFormat == "baseline::GPUKVFormat"
 
 
 def test_proxy_dir_contains_hcu_and_baseline_symbols(monkeypatch):
