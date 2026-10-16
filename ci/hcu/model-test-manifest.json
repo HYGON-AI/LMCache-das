@@ -22,7 +22,10 @@
       "host_path": "/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B",
       "container_path": "/llm/models/Qwen3-8B",
       "gpu_count": 2,
-      "start_model_attempts": 2
+      "start_model_attempts": 2,
+      "environment": {
+        "VLLM_HCU_USE_FLASH_ATTN": "1"
+      }
     },
     "deepseek-r1-w4a8-v2": {
       "ready": true,

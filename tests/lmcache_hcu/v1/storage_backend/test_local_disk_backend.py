@@ -105,8 +105,8 @@ def test_load_bytes_from_disk_returns_allocated_memory_when_read_succeeds():
 
 
 def test_load_bytes_from_disk_returns_none_when_read_fails():
-    """load_bytes_from_disk should return None when the file read fails."""
-    memory_obj = SimpleNamespace(byte_array=bytearray(4))
+    """load_bytes_from_disk should return None and drop the buffer when read fails."""
+    memory_obj = SimpleNamespace(byte_array=bytearray(4), ref_count_down=MagicMock())
     backend = SimpleNamespace(
         local_cpu_backend=SimpleNamespace(allocate=MagicMock(return_value=memory_obj)),
         read_file=MagicMock(return_value=False),
@@ -117,20 +117,24 @@ def test_load_bytes_from_disk_returns_none_when_read_fails():
     )
 
     assert result is None
+    memory_obj.ref_count_down.assert_called_once_with()
 
 
 def test_read_file_removes_stale_metadata_when_file_is_missing(tmp_path):
     """read_file should remove dictionary metadata when the on-disk file is gone."""
     key = "cache-key"
     missing_path = tmp_path / "missing.bin"
+    dict_ = {key: SimpleNamespace(path=str(missing_path))}
     backend = SimpleNamespace(
         os_disk_bs=4096,
         use_odirect=False,
         disk_lock=_Lock(),
-        dict={key: SimpleNamespace(path=str(missing_path))},
+        dict=dict_,
+        remove=MagicMock(side_effect=lambda k: dict_.pop(k, None)),
     )
 
     result = LocalDiskBackend.read_file(backend, key, bytearray(4), str(missing_path))
 
     assert result is False
+    backend.remove.assert_called_once_with(key)
     assert key not in backend.dict

@@ -77,7 +77,15 @@ def test_create_storage_backends_adds_xds_backend(monkeypatch):
 
     local_cpu = SimpleNamespace(name="local-cpu")
 
-    def create_storage_backends(config, metadata, loop, dst_device="cuda", lmcache_worker=None):
+    def create_storage_backends(
+        config,
+        metadata,
+        loop,
+        dst_device="cuda",
+        lmcache_worker=None,
+        skip_backends=None,
+        existing_backends=None,
+    ):
         return {"LocalCPUBackend": local_cpu}
 
     monkeypatch.setattr(hcu_gds_backend, "GdsBackend", GdsBackend, raising=False)

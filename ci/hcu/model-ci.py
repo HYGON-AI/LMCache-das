@@ -32,7 +32,10 @@ TOKEN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TEST_TOOL_ASSET_ROOT = "/ci_public/lmcache-das/assets/test-tool/"
-ALLOWED_MODEL_ENVIRONMENT = {"VLLM_USE_CAT_MLA": {"1"}}
+ALLOWED_MODEL_ENVIRONMENT = {
+    "VLLM_USE_CAT_MLA": {"1"},
+    "VLLM_HCU_USE_FLASH_ATTN": {"1"},
+}
 ALLOWED_CONFIG_FIXES = {
     "qwen3-8b-cpu": {"vllm.disable-cascade-attn"},
 }
