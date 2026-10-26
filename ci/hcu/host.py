@@ -37,6 +37,7 @@ TOP_LEVEL_FILES = {
     "installed-package.json",
     "patch-report.json",
     "test-inventory.json",
+    "disabled-tests.json",
     "test-summary.json",
     "model-tool.json",
     "model-inventory.json",
@@ -598,6 +599,36 @@ def resolved_model_profile(manifest, profile):
     return profiles[inherited] if inherited else value
 
 
+def validate_test_inventory(inventory, trusted_manifest_path, archived_manifest_path):
+    """Validate complete collection separately from the approved active subset."""
+    trusted = read_json(trusted_manifest_path)
+    if read_json(archived_manifest_path) != trusted:
+        raise HostError("archived disabled-test manifest differs from the trusted controller")
+    if inventory.get("disabled_manifest_sha256") != sha256_file(trusted_manifest_path):
+        raise HostError("disabled-test manifest SHA differs from the trusted controller")
+    for field, count_field in (("nodeids", "count"), ("collected_nodeids", "collected_count")):
+        nodes = inventory.get(field)
+        if not isinstance(nodes, list) or not all(isinstance(node, str) for node in nodes):
+            raise HostError("test inventory {} is not a string nodeid list".format(field))
+        if len(nodes) != len(set(nodes)):
+            raise HostError("test inventory {} contains duplicate nodeids".format(field))
+        if inventory.get(count_field) != len(nodes):
+            raise HostError("test inventory {} does not match {}".format(count_field, field))
+    collected = inventory["collected_nodeids"]
+    registered = {item["nodeid"]: item for item in trusted["tests"]}
+    if len(registered) != len(trusted["tests"]):
+        raise HostError("trusted disabled-test manifest contains duplicate registrations")
+    if set(registered) - set(collected):
+        raise HostError("trusted disabled tests did not collect")
+    disabled = [registered[node] for node in collected if node in registered]
+    active = [node for node in collected if node not in registered]
+    if not active or inventory["nodeids"] != active:
+        raise HostError("active nodeids differ from complete collection minus approved exclusions")
+    if inventory.get("disabled_count") != len(disabled) or inventory.get("disabled_tests") != disabled:
+        raise HostError("disabled inventory differs from the approved exact-nodeid manifest")
+    return active, collected
+
+
 def validate_patch_execution(report):
     # Execution receipts only: no target/marker/hash/idempotency contract.
     problems = []
@@ -630,7 +661,7 @@ def validate_success(
         "asset-manifest.json",
     ]
     if job_role == "framework":
-        required.extend(["test-inventory.json", "test-summary.json"])
+        required.extend(["test-inventory.json", "test-summary.json", "disabled-tests.json"])
     elif job_role == "model":
         required.append("model-tool.json")
     else:
@@ -647,21 +678,18 @@ def validate_success(
     if job_role == "framework":
         baseline = read_json(baseline_path)
         inventory = read_json(spool / "test-inventory.json")
-        nodeids = inventory.get("nodeids")
-        if not isinstance(nodeids, list) or not all(isinstance(item, str) for item in nodeids):
-            return ["test inventory does not contain a string nodeid list"], None
-        if len(nodeids) != len(set(nodeids)):
-            problems.append("test inventory contains duplicate nodeids")
-        if int(inventory.get("count", -1)) != len(nodeids):
-            problems.append("test inventory count does not match nodeids")
+        nodeids, collected_nodeids = validate_test_inventory(
+            inventory, Path(baseline_path).with_name("disabled-tests.json"),
+            spool / "disabled-tests.json",
+        )
         minimum = int(baseline["minimum_collected"])
-        if len(nodeids) < minimum:
-            problems.append("collected {} tests; trusted minimum is {}".format(len(nodeids), minimum))
-        collected_files = set(inventory_file(item) for item in nodeids)
+        if len(collected_nodeids) < minimum:
+            problems.append("collected {} tests; trusted minimum is {}".format(len(collected_nodeids), minimum))
+        collected_files = set(inventory_file(item) for item in collected_nodeids)
         missing_files = sorted(set(baseline["required_test_files"]) - collected_files)
         if missing_files:
             problems.append("required test files were not collected: {}".format(", ".join(missing_files)))
-        collected_definitions = set(inventory_definition(item) for item in nodeids)
+        collected_definitions = set(inventory_definition(item) for item in collected_nodeids)
         for file_path, definitions in baseline["required_test_definitions"].items():
             for definition in definitions:
                 if (file_path, definition) not in collected_definitions:
@@ -704,6 +732,12 @@ def validate_success(
             problems.append("container aggregate repeat count differs from requested repeat")
         if int(test_summary.get("expected_total", -1)) != expected * repeat:
             problems.append("container aggregate total count differs from trusted expectation")
+        if test_summary.get("collected_per_repeat") != len(collected_nodeids):
+            problems.append("container aggregate complete collection count differs from inventory")
+        if test_summary.get("disabled_per_repeat") != inventory["disabled_count"]:
+            problems.append("container aggregate disabled count differs from approved inventory")
+        if test_summary.get("disabled_tests") != inventory["disabled_tests"]:
+            problems.append("container aggregate disabled records differ from approved inventory")
     model_manifest = read_json(model_manifest_path)
     if runner_kind not in model_manifest.get("runners", []):
         problems.append("model manifest runner differs from the workflow runner")
@@ -763,6 +797,8 @@ def validate_success(
         problems.append("effective model config files differ from the trusted scenario inventory")
     return problems, {
         "collected": expected,
+        "complete_collection": len(collected_nodeids) if job_role == "framework" else 0,
+        "disabled": inventory["disabled_count"] if job_role == "framework" else 0,
         "repeats": repeat_stats,
         "model_cases": len(model_expected_ids),
     }
@@ -995,7 +1031,9 @@ def cmd_finalize(args):
         "- Cleanup exit code: `{}`".format(args.cleanup_rc),
     ]
     if details:
-        summary.append("- Collected tests: `{}`".format(details["collected"]))
+        summary.append("- Collected tests: `{}`".format(details["complete_collection"]))
+        summary.append("- Active tests per repetition: `{}`".format(details["collected"]))
+        summary.append("- Explicitly disabled tests (not passed or skipped): `{}`".format(details["disabled"]))
         summary.append("- Model cases: `{}`".format(details["model_cases"]))
     if problems:
         summary.extend(["", "## Host validation failures", ""])
