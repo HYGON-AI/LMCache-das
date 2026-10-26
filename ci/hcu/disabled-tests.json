@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "approved_on": "2026-10-26",
+  "tests": [
+    {
+      "nodeid": "lmcache_hcu/v1/storage_backend/test_storage_backend.py::test_create_storage_backends_adds_xds_backend",
+      "reason": "The positive XDS test mocks is_cuda_worker=False, but LMCache 0.4.2 intentionally omits XdsBackend for that worker type. Reproduced on 2026-10-22 and 2026-10-23.",
+      "restore_when": "Align the positive worker fixture with the intended 0.4.2 contract, retain the XDS assertion, and remove this entry after a passing targeted run."
+    },
+    {
+      "nodeid": "lmcache_hcu/v1/storage_backend/test_storage_backend.py::test_create_storage_backends_does_not_add_xds_without_xds_path",
+      "reason": "The remaining factory stub accepts 3-5 positional arguments while the 0.4.2 caller passes 7. Reproduced on 2026-10-22 and 2026-10-23.",
+      "restore_when": "Update the stub to the fixed upstream signature without weakening the no-XDS-path assertion, then remove this entry after a passing targeted run."
+    },
+    {
+      "nodeid": "lmcache_hcu/v1/test_cache_engine.py::test_retrieve_sync_path_records_hcu_stats_and_loads_to_gpu",
+      "reason": "The current retrieve implementation does not invoke the expected D2M statistics callback. The 0.4.2 metric-porting contract still needs developer confirmation. Reproduced on 2026-10-22 and 2026-10-23.",
+      "restore_when": "Confirm and implement or adapt the intended 0.4.2 statistics contract, retain GPU-loading coverage, then remove this entry after a passing targeted run."
+    },
+    {
+      "nodeid": "lmcache_hcu/v1/test_cache_engine.py::test_retrieve_remove_after_retrieve_deletes_storage_key",
+      "reason": "The fake engine lacks retrieve_locations and still expects the old single-argument remove contract. Reproduced on 2026-10-22 and 2026-10-23.",
+      "restore_when": "Align the fixture and remove(key, retrieve_locations) assertion with 0.4.2, then remove this entry after a passing targeted run."
+    }
+  ]
+}

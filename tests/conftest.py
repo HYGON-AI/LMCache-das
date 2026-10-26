@@ -5,6 +5,10 @@
 """Pytest bootstrap for LMCache-HCU tests that reuse upstream LMCache fixtures."""
 from __future__ import annotations
 
+# Standard
+import os
+os.environ.setdefault("VLLM_HCU_USE_CUSTOM_FLASH_ATTN", "1")
+
 # Third Party
 import pytest
 

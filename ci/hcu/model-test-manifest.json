@@ -22,7 +22,10 @@
       "host_path": "/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B",
       "container_path": "/llm/models/Qwen3-8B",
       "gpu_count": 2,
-      "start_model_attempts": 2
+      "start_model_attempts": 2,
+      "environment": {
+        "VLLM_HCU_USE_FLASH_ATTN": "1"
+      }
     },
     "deepseek-r1-w4a8-v2": {
       "ready": true,
@@ -59,23 +62,29 @@
         "drop_duplicate_options": ["vllm.disable-cascade-attn"],
         "set_options": {
           "vllm.gpu-memory-utilization": "0.20"
+        },
+        "remove_options": {
+          "vllm.disable-log-requests": "true"
         }
       }
     },
     "qwen3-8b-localdisk": {
       "model": "qwen3-8b",
       "backend": "localdisk",
-      "config": "vllm_conf/Qwen3-8B/02_localdisk.conf"
+      "config": "vllm_conf/Qwen3-8B/02_localdisk.conf",
+      "config_fixes": {"remove_options": {"vllm.disable-log-requests": "true"}}
     },
     "qwen3-8b-posix": {
       "model": "qwen3-8b",
       "backend": "posix",
-      "config": "vllm_conf/Qwen3-8B/03_posix.conf"
+      "config": "vllm_conf/Qwen3-8B/03_posix.conf",
+      "config_fixes": {"remove_options": {"vllm.disable-log-requests": "true"}}
     },
     "deepseek-r1-w4a8-v2-cpu": {
       "model": "deepseek-r1-w4a8-v2",
       "backend": "cpu",
       "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/04_cpu.conf",
+      "config_fixes": {"remove_options": {"vllm.disable-log-requests": "true"}},
       "long_doc_validation": "cpu_memory",
       "long_doc_options": {
         "num_documents": 4,
@@ -87,6 +96,7 @@
       "model": "deepseek-r1-w4a8-v2",
       "backend": "localdisk",
       "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/02_localdisk.conf",
+      "config_fixes": {"remove_options": {"vllm.disable-log-requests": "true"}},
       "long_doc_options": {
         "num_documents": 50,
         "output_len": 16,
@@ -100,6 +110,7 @@
       "model": "deepseek-r1-w4a8-v2",
       "backend": "posix",
       "config": "vllm_conf/DeepSeek-R1-0528-Channel-INT4-w4a8/03_posix.conf",
+      "config_fixes": {"remove_options": {"vllm.disable-log-requests": "true"}},
       "long_doc_options": {
         "num_documents": 50,
         "output_len": 16,

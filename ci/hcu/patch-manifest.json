@@ -18,6 +18,16 @@
       "marker": "# END LMCACHE_HCU_VLLM_CONNECTOR_PATCH",
       "begin_marker": "# BEGIN LMCACHE_HCU_VLLM_CONNECTOR_PATCH",
       "anchor": "from lmcache.integration.vllm.vllm_v1_adapter import LMCacheConnectorV1Impl"
+    },
+    {
+      "module": "lmcache.utils",
+      "relative_path": "lmcache/utils.py",
+      "preimage_sha256": "f484bc6bce9a203fb18c91c3e13b349b198aa8a02e2facef4ea6c8adfcc103ee",
+      "required": true,
+      "marker": "# END LMCACHE_HCU_DISK_METADATA",
+      "begin_marker": "# BEGIN LMCACHE_HCU_DISK_METADATA",
+      "marker_count": 2,
+      "required_text": "disk_metadata: Optional[BlockFirstDiskMetadata] = None"
     }
   ]
 }

@@ -5,6 +5,76 @@ weekly GitHub Actions workflows. The first release runs the complete pytest
 inventory under the repository `tests/` directory and the reviewed model
 scenarios declared in `model-test-manifest.json`.
 
+## LMCache 0.4.2 restoration
+
+This controller incorporates the test adaptations from PR #15. The removed
+thread-pool-status test checks a feature not ported to 0.4.2; its required
+baseline definition is removed too. The complete remaining `tests/` tree is
+still collected dynamically. Do not hard-code the previous 156/160 counts or
+interpret controller self-tests as the repository's GPU unit-test results.
+
+On 2026-10-26 the maintainer explicitly approved temporarily disabling the
+four failures reproduced on 2026-10-22/23. `disabled-tests.json` records exact
+nodeids, individual causes and restoration conditions. Test source and required
+baseline definitions remain intact. Collection first discovers everything,
+then excludes only these exact nodes from execution. A missing/stale entry,
+duplicate registration or attempt to disable the entire suite is an error.
+At the reviewed revision this means 159 collected, 155 active, 4 disabled;
+disabled nodes are neither successful tests nor pytest skips. Inventory,
+collection logs and `summary.md` expose the exclusions. New tests are still
+automatically collected, and any other failure, skip or xfail still fails CI.
+
+The disabled nodes are the two storage-factory tests
+`test_create_storage_backends_adds_xds_backend` and
+`test_create_storage_backends_does_not_add_xds_without_xds_path`, plus the
+cache-engine tests `test_retrieve_sync_path_records_hcu_stats_and_loads_to_gpu`
+and `test_retrieve_remove_after_retrieve_deletes_storage_key`. This temporary
+decision does not fix their semantics or relax the separate patch gate.
+
+`compatibility.json` pins the reviewed vLLM 0.18.1 image digest and Docker image
+ID. At cutover, repository variables `LMCACHE_HCU_BASE_IMAGE` and
+`LMCACHE_HCU_BASE_IMAGE_ID` must match that lock. The host pulls a missing
+digest reference automatically; a missing old local-only tag is an error.
+
+Four small runtime/build dependencies are pinned in `dependency-lock.json`.
+Their wheels must be staged in its fixed `/ci_public` wheelhouse before
+activation. Each restricted test container mounts the directory read-only,
+checks every SHA256, and installs only those local wheels into the disposable
+venv with `--no-index --no-deps`. No current plugin wheel is reused across
+different tested source SHAs, and model jobs still consume the one framework
+wheel.
+
+The original test-tool archive and its SHA stay unchanged. For the six
+Qwen/DeepSeek scenarios, effective configurations remove only
+`vllm.disable-log-requests = true`, which vLLM 0.18.1 rejects. A missing,
+duplicated or different-valued option fails rather than being silently
+rewritten. Model paths, TP, workload sizes and required KV-cache parameters
+are unaffected by this particular adaptation; earlier reviewed CPU/workload
+overrides remain explicit in the scenario manifest. Qwen's Flash Attention
+variable and DeepSeek's CAT MLA variable remain separate contracts.
+
+The source-patch manifest now includes `lmcache/utils.py` with its fixed
+preimage, two marker pairs and the required `disk_metadata` field. Before
+applying any patch, a fresh Python process imports the actual patcher classes
+and resolves their target files exactly as CLI startup would. All three must
+point into the fixed upstream checkout. A runtime alias resolving the
+connector to `lmcache_hcu/...` remains a blocking business-patcher defect,
+not an allowed extra mutation. The gate does not disable runtime patches or
+substitute another patch implementation to make that check pass.
+
+Known business blocker at the PR #15 revision: in
+`lmcache_hcu/integration/patch/vllm/connector_import_patch.py`, `_target_file()`
+uses the runtime-replaced connector module's `find_spec`. Development must
+anchor the path to the real upstream `lmcache` package instead (as the utils
+patcher already does). CI-side changes do not repair that implementation.
+
+Validation order after that fix: trusted-controller branch plus tested PR
+revision, current-SHA build/install/patch gate, full pytest inventory,
+Qwen LocalDisk/POSIX, real PR event, then full Weekly. PR controllers and
+baseline manifests come from the target branch; changing only the PR head's
+CI scripts does not activate them. Do not mark this migration complete based
+only on syntax checks, mocks or configuration generation.
+
 ## Execution model
 
 Each execution unit still exposes seven readable steps:

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "python": "3.10",
+  "wheelhouse": "/ci_public/lmcache-das/assets/dependencies/v0.4.2-cp310",
+  "wheels": [
+    {"filename": "sortedcontainers-2.4.0-py2.py3-none-any.whl", "sha256": "a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0"},
+    {"filename": "aiofile-3.9.0-py3-none-any.whl", "sha256": "ce2f6c1571538cbdfa0143b04e16b208ecb0e9cb4148e528af8a640ed51cc8aa"},
+    {"filename": "aiofiles-24.1.0-py3-none-any.whl", "sha256": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5"},
+    {"filename": "caio-0.9.25-cp310-cp310-manylinux2010_x86_64.manylinux2014_x86_64.manylinux_2_12_x86_64.manylinux_2_17_x86_64.whl", "sha256": "db9b5681e4af8176159f0d6598e73b2279bb661e718c7ac23342c550bd78c241"}
+  ]
+}

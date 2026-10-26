@@ -104,10 +104,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     expected_modules = {
         "lmcache",
         "lmcache.integration.vllm.lmcache_connector_v1",
+        "lmcache.utils",
     }
     targets = patch_manifest.get("targets", [])
-    if not isinstance(targets, list) or len(targets) != 2:
-        raise CIError("Exactly two source patch targets are required")
+    if not isinstance(targets, list) or len(targets) != 3:
+        raise CIError("Exactly three LMCache 0.4.2 source patch targets are required")
     modules = {item.get("module") for item in targets if isinstance(item, dict)}
     if modules != expected_modules:
         raise CIError(f"Unexpected source patch target set: {modules}")
@@ -127,6 +128,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
             raise CIError(f"Patch target {target['module']} must be required")
         if not re.fullmatch(r"[0-9a-f]{64}", target["preimage_sha256"]):
             raise CIError(f"Invalid preimage SHA for {target['module']}")
+        expected_markers = 2 if target["module"] == "lmcache.utils" else 1
+        if target.get("marker_count", 1) != expected_markers:
+            raise CIError(f"Unexpected patch marker count for {target['module']}")
     if args.profile not in {"pr", "manual", "weekly"}:
         raise CIError(f"Unsupported profile: {args.profile}")
     if args.repeat not in {1, 2, 3}:
@@ -139,6 +143,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
         raise CIError("Base image must be a reviewed tag or immutable digest")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.base_image_id):
         raise CIError("Base image ID must be an immutable sha256 ID")
+    image = compatibility["image"]
+    if args.base_image != image["reference"] or args.base_image_id != image["id"]:
+        raise CIError("Repository image variables differ from the reviewed LMCache 0.4.2 image lock")
     if not Path(args.checkout).is_dir():
         raise CIError(f"Checkout does not exist: {args.checkout}")
     if not Path(args.upstream).is_dir():
@@ -169,6 +176,37 @@ def detect_hcu_arch(torch_module: object) -> str:
     raise CIError("Unable to detect the HCU architecture")
 
 
+def dependency_wheels(lock: dict, wheelhouse: Path) -> list[Path]:
+    if lock.get("schema_version") != 1 or not lock.get("wheels"):
+        raise CIError("Invalid offline dependency lock")
+    paths = []
+    seen = set()
+    for item in lock["wheels"]:
+        name = item["filename"]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.whl", name) or name in seen:
+            raise CIError("Unsafe or duplicate offline dependency filename")
+        path = wheelhouse / name
+        if path.is_symlink() or not path.is_file() or sha256_file(path) != item["sha256"]:
+            raise CIError(f"Offline dependency missing or hash mismatch: {path}")
+        paths.append(path)
+        seen.add(name)
+    return paths
+
+
+def cmd_install_dependencies(args: argparse.Namespace) -> int:
+    lock = read_json(args.lock)
+    current = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if current != lock["python"]:
+        raise CIError(f"Offline dependency wheels require Python {lock['python']}, got {current}")
+    paths = dependency_wheels(lock, Path(args.wheelhouse))
+    result = run_checked([
+        sys.executable, "-m", "pip", "install", "--no-index", "--no-deps",
+        "--no-compile", *map(str, paths),
+    ])
+    print(result.stdout)
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     compatibility = read_json(args.compatibility)
     try:
@@ -194,6 +232,18 @@ def cmd_probe(args: argparse.Namespace) -> int:
     if base_version(vllm_version) != compatibility["vllm"]["version"]:
         raise CIError(
             f"vLLM mismatch: expected {compatibility['vllm']['version']}, got {vllm_version}"
+        )
+    missing_dependencies = []
+    for dependency in compatibility.get("required_dependencies", []):
+        try:
+            importlib.metadata.version(dependency)
+        except importlib.metadata.PackageNotFoundError:
+            missing_dependencies.append(dependency)
+    if missing_dependencies:
+        raise CIError(
+            "Runtime/build dependencies missing from the image: "
+            + ", ".join(missing_dependencies)
+            + ". Supply an offline dependency wheelhouse; do not install from the network during tests."
         )
     if shutil.which("hipcc") is None:
         raise CIError("hipcc is not available on PATH")
@@ -487,6 +537,42 @@ def invoke_patch(mode: str) -> str:
     return result.stdout
 
 
+def verify_resolved_patch_targets(manifest: dict, upstream: Path, resolved: dict) -> None:
+    expected = {
+        item["module"]: str((upstream / item["relative_path"]).resolve())
+        for item in manifest["targets"]
+    }
+    if resolved != expected:
+        raise CIError(
+            "Source patch target resolution is unsafe after importing lmcache_hcu. "
+            f"Expected fixed upstream files {expected}; actual patcher targets {resolved}. "
+            "Fix the business patcher's module lookup (runtime module exchange can point "
+            "to lmcache_hcu itself). No source patches have been applied by this gate."
+        )
+
+
+def resolve_patch_targets() -> dict:
+    # Run the same package import as the real CLI, without invoking apply_all.
+    # A clean parent-process find_spec is insufficient: CLI startup swaps modules.
+    probe = '''
+import json
+from lmcache_hcu.integration.patch.lmcache.runtime_import_patch import LMCacheRuntimeImportPatcher
+from lmcache_hcu.integration.patch.vllm.connector_import_patch import VllmConnectorImportPatcher
+from lmcache_hcu.integration.patch.lmcache.utils_metadata_patch import LMCacheUtilsMetadataPatcher
+print("LMCACHE_CI_TARGETS=" + json.dumps({
+    "lmcache": str(LMCacheRuntimeImportPatcher._target_file().resolve()),
+    "lmcache.integration.vllm.lmcache_connector_v1": str(VllmConnectorImportPatcher._target_file().resolve()),
+    "lmcache.utils": str(LMCacheUtilsMetadataPatcher._target_file().resolve()),
+}))
+'''
+    result = run_checked([sys.executable, "-c", probe])
+    records = [line.split("=", 1)[1] for line in result.stdout.splitlines()
+               if line.startswith("LMCACHE_CI_TARGETS=")]
+    if len(records) != 1:
+        raise CIError("Patch target resolution probe did not return exactly one record")
+    return json.loads(records[0])
+
+
 def cmd_patch_gate(args: argparse.Namespace) -> int:
     output = Path(args.output)
     report: dict[str, object] = {"status": "failed", "events": []}
@@ -532,6 +618,10 @@ def cmd_patch_gate(args: argparse.Namespace) -> int:
         before_vllm_root = module_file("vllm").parent
         before_vllm = source_snapshot(before_vllm_root)
 
+        report["phase"] = "target-resolution"
+        report["resolved_paths"] = resolve_patch_targets()
+        verify_resolved_patch_targets(manifest, upstream, report["resolved_paths"])
+        report["phase"] = "first-install"
         report["events"].append({"first_install": invoke_patch("install")})
         after_first = source_snapshot(upstream)
         changed = {
@@ -545,8 +635,11 @@ def cmd_patch_gate(args: argparse.Namespace) -> int:
         for item in targets:
             path = Path(item["path"])
             text = path.read_text(encoding="utf-8")
-            if text.count(item["begin_marker"]) != 1 or text.count(item["marker"]) != 1:
+            marker_count = item.get("marker_count", 1)
+            if text.count(item["begin_marker"]) != marker_count or text.count(item["marker"]) != marker_count:
                 raise CIError(f"Patch markers are missing or duplicated in {path}")
+            if item.get("required_text") and text.count(item["required_text"]) != 1:
+                raise CIError(f"Required patched field is missing or duplicated in {path}")
             anchor = item.get("anchor")
             if anchor and text.index(item["begin_marker"]) > text.index(anchor):
                 raise CIError(f"Connector patch was not inserted before the exact anchor in {path}")
@@ -651,6 +744,47 @@ def cmd_patch_cleanup(args: argparse.Namespace) -> int:
     return 0
 
 
+def partition_disabled_tests(
+    nodeids: list[str], manifest_path: str | Path | None
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Exclude only explicitly approved exact nodeids, never a glob or marker."""
+    if manifest_path is None:
+        return list(nodeids), []
+    manifest = read_json(manifest_path)
+    if set(manifest) != {"schema_version", "approved_on", "tests"}:
+        raise CIError("Invalid disabled-test manifest fields")
+    if manifest["schema_version"] != 1 or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}", str(manifest["approved_on"])
+    ):
+        raise CIError("Invalid disabled-test manifest version or approval date")
+    entries = manifest["tests"]
+    if not isinstance(entries, list):
+        raise CIError("Disabled tests must be a list")
+    registered: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"nodeid", "reason", "restore_when"}:
+            raise CIError("Invalid disabled-test entry fields")
+        if not all(isinstance(value, str) and value.strip() for value in entry.values()):
+            raise CIError("Disabled tests require a nodeid, reason and restoration condition")
+        nodeid = entry["nodeid"]
+        path, separator, suffix = nodeid.partition("::")
+        if (not separator or not suffix or not path.endswith(".py")
+                or "\\" in path or ":" in path
+                or any(part in {"", ".", ".."} for part in path.split("/"))):
+            raise CIError(f"Invalid exact disabled nodeid: {nodeid}")
+        if nodeid in registered:
+            raise CIError(f"Duplicate disabled nodeid: {nodeid}")
+        registered[nodeid] = dict(entry)
+    missing = set(registered) - set(nodeids)
+    if missing:
+        raise CIError(f"Disabled nodeids did not collect; review stale registrations: {sorted(missing)}")
+    active = [nodeid for nodeid in nodeids if nodeid not in registered]
+    disabled = [registered[nodeid] for nodeid in nodeids if nodeid in registered]
+    if not active:
+        raise CIError("Disabled-test manifest would disable the entire suite")
+    return active, disabled
+
+
 class InventoryPlugin:
     def __init__(self) -> None:
         self.nodeids: list[str] = []
@@ -722,13 +856,22 @@ def cmd_discover(args: argparse.Namespace) -> int:
         raise CIError("pytest collected zero tests")
     if len(set(nodeids)) != len(nodeids):
         raise CIError("pytest collected duplicate nodeids")
+    active, disabled = partition_disabled_tests(nodeids, getattr(args, "disabled_tests", None))
     inventory = {
-        "count": len(nodeids),
-        "nodeids": nodeids,
+        "count": len(active),
+        "nodeids": active,
+        "collected_count": len(nodeids),
+        "collected_nodeids": nodeids,
+        "disabled_count": len(disabled),
+        "disabled_tests": disabled,
         "tests_root": str(Path(args.tests).resolve()),
     }
+    if getattr(args, "disabled_tests", None):
+        inventory["disabled_manifest_sha256"] = sha256_file(Path(args.disabled_tests))
     write_json(output, inventory)
-    print(f"Collected {len(nodeids)} tests")
+    print(f"Collected {len(nodeids)} tests; active={len(active)}, explicitly disabled={len(disabled)}")
+    for entry in disabled:
+        print(f"DISABLED {entry['nodeid']}: {entry['reason']}")
     return 0
 
 
@@ -833,6 +976,9 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         repeats.append({"repeat": repeat, "pytest_rc": rc, **stats})
     summary = {
         "status": "passed" if not problems else "failed",
+        "collected_per_repeat": inventory.get("collected_count", expected),
+        "disabled_per_repeat": inventory.get("disabled_count", 0),
+        "disabled_tests": inventory.get("disabled_tests", []),
         "expected_per_repeat": expected,
         "expected_total": expected * args.repeat,
         "repeat_count": args.repeat,
@@ -844,10 +990,19 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         "# LMCache-HCU test summary",
         "",
         f"- Status: `{summary['status']}`",
-        f"- Collected tests: `{expected}`",
+        f"- Collected tests: `{inventory.get('collected_count', expected)}`",
+        f"- Active tests: `{expected}`",
+        f"- Explicitly disabled tests (not passed or skipped): `{inventory.get('disabled_count', 0)}`",
         f"- Repetitions: `{args.repeat}`",
         f"- Expected total cases: `{expected * args.repeat}`",
     ]
+    if inventory.get("disabled_tests"):
+        markdown.extend(["", "## Explicitly disabled tests", ""])
+        for entry in inventory["disabled_tests"]:
+            markdown.extend([
+                f"- `{entry['nodeid']}`: {entry['reason']}",
+                f"  Restore when: {entry['restore_when']}",
+            ])
     if problems:
         markdown.extend(["", "## Problems", "", *[f"- {item}" for item in problems]])
     Path(args.markdown).write_text("\n".join(markdown) + "\n", encoding="utf-8")
@@ -879,6 +1034,28 @@ def cmd_synthetic_junit(args: argparse.Namespace) -> int:
 def cmd_selftest(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="lmcache-hcu-ci-selftest-") as temporary:
         root = Path(temporary)
+        dependency = root / "example-1-py3-none-any.whl"
+        dependency.write_bytes(b"selftest-wheel")
+        lock = {"schema_version": 1, "wheels": [{"filename": dependency.name, "sha256": sha256_file(dependency)}]}
+        dependency_wheels(lock, root)
+        dependency.write_bytes(b"tampered-wheel")
+        try:
+            dependency_wheels(lock, root)
+        except CIError:
+            pass
+        else:
+            raise CIError("Tampered dependency wheel was not rejected")
+        target_manifest = {"targets": [{"module": "lmcache", "relative_path": "lmcache/__init__.py"}]}
+        correct = {"lmcache": str((root / "lmcache/__init__.py").resolve())}
+        verify_resolved_patch_targets(target_manifest, root, correct)
+        for wrong in ({}, {"lmcache": str(root / "lmcache_hcu/__init__.py")},
+                      dict(correct, unexpected="extra-file")):
+            try:
+                verify_resolved_patch_targets(target_manifest, root, wrong)
+            except CIError:
+                pass
+            else:
+                raise CIError("Unsafe patch target resolution was not rejected")
         junit = root / "junit.xml"
         cmd_synthetic_junit(
             argparse.Namespace(
@@ -959,6 +1136,11 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--output", required=True)
     probe.set_defaults(func=cmd_probe)
 
+    dependencies = subparsers.add_parser("install-dependencies")
+    dependencies.add_argument("--lock", required=True)
+    dependencies.add_argument("--wheelhouse", required=True)
+    dependencies.set_defaults(func=cmd_install_dependencies)
+
     upstream = subparsers.add_parser("verify-upstream")
     upstream.add_argument("--compatibility", required=True)
     upstream.add_argument("--source", required=True)
@@ -994,6 +1176,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--execute-dir", required=True)
     discover.add_argument("--output", required=True)
     discover.add_argument("--collect-child", action="store_true")
+    discover.add_argument("--disabled-tests", help="Trusted exact-nodeid disable manifest")
     discover.set_defaults(func=cmd_discover)
 
     execute = subparsers.add_parser("execute")

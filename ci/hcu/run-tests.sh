@@ -296,7 +296,7 @@ best_effort_patch_cleanup() {
     fi
     local status
     status="$(git -C "${UPSTREAM_ROOT}" status --porcelain=v1 --untracked-files=all)"
-    if grep -E 'lmcache/__init__\.py|lmcache/integration/vllm/lmcache_connector_v1\.py|\.bak\.' \
+    if grep -E 'lmcache/__init__\.py|lmcache/utils\.py|lmcache/integration/vllm/lmcache_connector_v1\.py|\.bak\.' \
         <<<"${status}" >/dev/null; then
         return 1
     fi
@@ -305,7 +305,15 @@ best_effort_patch_cleanup() {
 
 phase_initialize() {
     run_phase sandbox 3 prepare_sandbox || return $?
+    # prepare_sandbox runs on the left of a tee pipeline; its activation only
+    # affects that subshell. Activate here before any install/uninstall.
+    source "${VENV_ROOT}/bin/activate"
+    [[ "$(python3 -c 'import sys; print(sys.prefix)')" == "${VENV_ROOT}" ]] || return 3
     run_phase remove-preinstalled-plugin 3 remove_preinstalled_plugin || return $?
+    run_phase offline-dependencies 3 \
+        python3 "${CI_HELPER}" install-dependencies \
+            --lock "${CI_ROOT}/dependency-lock.json" \
+            --wheelhouse /input/dependencies || return $?
     run_phase environment 3 \
         python3 "${CI_HELPER}" probe \
             --compatibility "${COMPATIBILITY}" \
@@ -353,11 +361,13 @@ phase_prepare_tests() {
             --upstream "${UPSTREAM_ROOT}" \
             --output "${OUTPUT_ROOT}/patch-report.json" || return $?
     if [[ "${JOB_ROLE}" == "framework" ]]; then
+        cp "${CI_ROOT}/disabled-tests.json" "${OUTPUT_ROOT}/disabled-tests.json"
         run_phase collect 7 \
             python3 "${CI_HELPER}" discover \
                 --tests "${TEST_ROOT}" \
                 --config "${TEST_ROOT}/pytest.ini" \
                 --execute-dir "${EXECUTE_ROOT}" \
+                --disabled-tests "${CI_ROOT}/disabled-tests.json" \
                 --output "${OUTPUT_ROOT}/test-inventory.json" || return $?
     else
         run_phase model-tool 7 \
