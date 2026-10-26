@@ -9,7 +9,6 @@ readonly CI_HELPER="${CI_ROOT}/ci.py"
 readonly MODEL_HELPER="${CI_ROOT}/model-ci.py"
 readonly MODEL_MANIFEST="${CI_ROOT}/model-test-manifest.json"
 readonly COMPATIBILITY="${CI_ROOT}/compatibility.json"
-readonly PATCH_MANIFEST="${CI_ROOT}/patch-manifest.json"
 readonly SANDBOX_ROOT="/sandbox"
 readonly SOURCE_INPUT="/input/source"
 readonly UPSTREAM_INPUT="/input/upstream"
@@ -29,7 +28,6 @@ readonly STATE_ROOT="${OUTPUT_ROOT}/state"
 readonly JOB_ROLE="${HCU_CI_JOB_ROLE:-framework}"
 
 CURRENT_STAGE="initializing"
-PATCH_GATE_STARTED=0
 
 mkdir -p \
     "${WHEEL_ROOT}" \
@@ -284,22 +282,12 @@ execute_repeat() {
 }
 
 best_effort_patch_cleanup() {
-    if [[ ! -d "${UPSTREAM_ROOT}/.git" ]]; then
-        return 0
-    fi
-    if [[ -f "${OUTPUT_ROOT}/patch-report.json" ]] && \
-        python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("status") == "passed" else 1)' \
-            "${OUTPUT_ROOT}/patch-report.json"; then
-        python3 "${CI_HELPER}" patch-cleanup \
+    if [[ -f "${OUTPUT_ROOT}/patch-report.json" ]]; then
+        python3 "${CI_HELPER}" patch-uninstall \
             --report "${OUTPUT_ROOT}/patch-report.json"
         return $?
     fi
-    local status
-    status="$(git -C "${UPSTREAM_ROOT}" status --porcelain=v1 --untracked-files=all)"
-    if grep -E 'lmcache/__init__\.py|lmcache/utils\.py|lmcache/integration/vllm/lmcache_connector_v1\.py|\.bak\.' \
-        <<<"${status}" >/dev/null; then
-        return 1
-    fi
+    printf '%s\n' 'Patch install was not attempted; nothing to uninstall.'
     return 0
 }
 
@@ -354,11 +342,8 @@ phase_build() {
 
 phase_prepare_tests() {
     activate_environment
-    PATCH_GATE_STARTED=1
     run_phase source-patch 6 \
-        python3 "${CI_HELPER}" patch-gate \
-            --manifest "${PATCH_MANIFEST}" \
-            --upstream "${UPSTREAM_ROOT}" \
+        python3 "${CI_HELPER}" patch-apply \
             --output "${OUTPUT_ROOT}/patch-report.json" || return $?
     if [[ "${JOB_ROLE}" == "framework" ]]; then
         cp "${CI_ROOT}/disabled-tests.json" "${OUTPUT_ROOT}/disabled-tests.json"

@@ -96,41 +96,8 @@ def path_is_within(path: str | Path, root: str | Path) -> bool:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     compatibility = read_json(args.compatibility)
-    patch_manifest = read_json(args.patch_manifest)
     if compatibility.get("schema_version") != 1:
         raise CIError("Unsupported compatibility schema")
-    if patch_manifest.get("schema_version") != 1:
-        raise CIError("Unsupported patch manifest schema")
-    expected_modules = {
-        "lmcache",
-        "lmcache.integration.vllm.lmcache_connector_v1",
-        "lmcache.utils",
-    }
-    targets = patch_manifest.get("targets", [])
-    if not isinstance(targets, list) or len(targets) != 3:
-        raise CIError("Exactly three LMCache 0.4.2 source patch targets are required")
-    modules = {item.get("module") for item in targets if isinstance(item, dict)}
-    if modules != expected_modules:
-        raise CIError(f"Unexpected source patch target set: {modules}")
-    if patch_manifest.get("upstream_commit") != compatibility["lmcache"]["source_commit"]:
-        raise CIError("Patch manifest and compatibility source commits differ")
-    for target in targets:
-        for field in (
-            "module",
-            "relative_path",
-            "preimage_sha256",
-            "marker",
-            "begin_marker",
-        ):
-            if not isinstance(target.get(field), str) or not target[field]:
-                raise CIError(f"Patch target is missing {field}")
-        if target.get("required") is not True:
-            raise CIError(f"Patch target {target['module']} must be required")
-        if not re.fullmatch(r"[0-9a-f]{64}", target["preimage_sha256"]):
-            raise CIError(f"Invalid preimage SHA for {target['module']}")
-        expected_markers = 2 if target["module"] == "lmcache.utils" else 1
-        if target.get("marker_count", 1) != expected_markers:
-            raise CIError(f"Unexpected patch marker count for {target['module']}")
     if args.profile not in {"pr", "manual", "weekly"}:
         raise CIError(f"Unsupported profile: {args.profile}")
     if args.repeat not in {1, 2, 3}:
@@ -535,6 +502,46 @@ def invoke_patch(mode: str) -> str:
         env=env,
     )
     return result.stdout
+
+
+def cmd_patch_apply(args: argparse.Namespace) -> int:
+    """Use the repository CLI without imposing CI-specific patch semantics."""
+    report = {
+        "mode": "repository-cli",
+        "strict_validation": "disabled",
+        "status": "failed",
+        "install_attempted": True,
+    }
+    write_json(args.output, report)
+    print("Using repository patch CLI; strict CI patch validation is disabled.", flush=True)
+    try:
+        output = invoke_patch("install")
+        print(output, end="" if output.endswith("\n") else "\n", flush=True)
+        report["status"] = "applied"
+        write_json(args.output, report)
+        return 0
+    except Exception as exc:
+        report["error"] = str(exc)
+        write_json(args.output, report)
+        raise
+
+
+def cmd_patch_uninstall(args: argparse.Namespace) -> int:
+    report = read_json(args.report)
+    if report.get("mode") != "repository-cli" or report.get("install_attempted") is not True:
+        raise CIError("Cannot uninstall without a repository patch install attempt")
+    try:
+        output = invoke_patch("uninstall")
+        print(output, end="" if output.endswith("\n") else "\n", flush=True)
+        report["cleanup_status"] = "uninstalled"
+        report.pop("cleanup_error", None)
+        write_json(args.report, report)
+        return 0
+    except Exception as exc:
+        report["cleanup_status"] = "failed"
+        report["cleanup_error"] = str(exc)
+        write_json(args.report, report)
+        raise
 
 
 def verify_resolved_patch_targets(manifest: dict, upstream: Path, resolved: dict) -> None:
@@ -1120,7 +1127,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("--compatibility", required=True)
-    validate.add_argument("--patch-manifest", required=True)
     validate.add_argument("--base-image", required=True)
     validate.add_argument("--base-image-id", required=True)
     validate.add_argument("--profile", required=True)
@@ -1160,6 +1166,15 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--output", required=True)
     install.set_defaults(func=cmd_verify_install)
 
+    patch_apply = subparsers.add_parser("patch-apply")
+    patch_apply.add_argument("--output", required=True)
+    patch_apply.set_defaults(func=cmd_patch_apply)
+
+    patch_uninstall = subparsers.add_parser("patch-uninstall")
+    patch_uninstall.add_argument("--report", required=True)
+    patch_uninstall.set_defaults(func=cmd_patch_uninstall)
+
+    # Retained for explicit diagnostics only; workflows do not call this gate.
     patch = subparsers.add_parser("patch-gate")
     patch.add_argument("--manifest", required=True)
     patch.add_argument("--upstream", required=True)

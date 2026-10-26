@@ -158,7 +158,7 @@ jobs:
           fi
           bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" build
 
-      - name: Verify patches and prepare selected tests
+      - name: Apply repository patches and prepare selected tests
         if: ${{ always() && !cancelled() }}
         run: |
           if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||

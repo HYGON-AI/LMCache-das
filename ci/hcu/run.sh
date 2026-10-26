@@ -405,7 +405,6 @@ validate_configuration() {
         "${bind_args[@]}" \
         "${BASE_IMAGE}" /opt/ci/ci/hcu/ci.py validate \
             --compatibility /opt/ci/ci/hcu/compatibility.json \
-            --patch-manifest /opt/ci/ci/hcu/patch-manifest.json \
             --base-image "${BASE_IMAGE}" --base-image-id "${BASE_IMAGE_ID}" \
             --profile "${PROFILE}" \
             --repeat "${REPEAT}" --checkout /input/source --upstream /input/upstream

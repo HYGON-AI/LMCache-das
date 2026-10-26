@@ -86,6 +86,7 @@ if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) els
         "${SCRIPT_DIR}/ci.py" "${SELFTEST_CACHE}/ci.pyc"
     python3 "${SCRIPT_DIR}/ci.py" selftest
     python3 "${SCRIPT_DIR}/test_ci_042.py"
+    python3 "${SCRIPT_DIR}/test_ci_patch_cli.py"
     python3 "${SCRIPT_DIR}/test_ci_disabled.py"
 else
     printf '%s\n' \
