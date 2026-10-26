@@ -598,6 +598,18 @@ def resolved_model_profile(manifest, profile):
     return profiles[inherited] if inherited else value
 
 
+def validate_patch_execution(report):
+    # Execution receipts only: no target/marker/hash/idempotency contract.
+    problems = []
+    if report.get("mode") != "repository-cli" or report.get("strict_validation") != "disabled":
+        problems.append("patch execution receipt does not declare repository CLI mode")
+    if report.get("install_attempted") is not True or report.get("status") != "applied":
+        problems.append("repository patch install command did not complete successfully")
+    if report.get("cleanup_status") != "uninstalled":
+        problems.append("repository patch uninstall command did not complete successfully")
+    return problems
+
+
 def validate_success(
     spool,
     baseline_path,
@@ -681,9 +693,7 @@ def validate_success(
                         index, stats["failures"], stats["errors"], stats["skipped"]
                     )
                 )
-    patch_report = read_json(spool / "patch-report.json")
-    if patch_report.get("status") != "passed":
-        problems.append("source-patch gate did not pass")
+    problems.extend(validate_patch_execution(read_json(spool / "patch-report.json")))
     if job_role == "framework":
         test_summary = read_json(spool / "test-summary.json")
         if test_summary.get("status") != "passed":

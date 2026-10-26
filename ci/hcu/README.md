@@ -29,7 +29,8 @@ The disabled nodes are the two storage-factory tests
 `test_create_storage_backends_does_not_add_xds_without_xds_path`, plus the
 cache-engine tests `test_retrieve_sync_path_records_hcu_stats_and_loads_to_gpu`
 and `test_retrieve_remove_after_retrieve_deletes_storage_key`. This temporary
-decision does not fix their semantics or relax the separate patch gate.
+decision does not fix their semantics. The separately approved suspension of
+the strict patch gate is described below.
 
 `compatibility.json` pins the reviewed vLLM 0.18.1 image digest and Docker image
 ID. At cutover, repository variables `LMCACHE_HCU_BASE_IMAGE` and
@@ -53,23 +54,28 @@ are unaffected by this particular adaptation; earlier reviewed CPU/workload
 overrides remain explicit in the scenario manifest. Qwen's Flash Attention
 variable and DeepSeek's CAT MLA variable remain separate contracts.
 
-The source-patch manifest now includes `lmcache/utils.py` with its fixed
-preimage, two marker pairs and the required `disk_metadata` field. Before
-applying any patch, a fresh Python process imports the actual patcher classes
-and resolves their target files exactly as CLI startup would. All three must
-point into the fixed upstream checkout. A runtime alias resolving the
-connector to `lmcache_hcu/...` remains a blocking business-patcher defect,
-not an allowed extra mutation. The gate does not disable runtime patches or
-substitute another patch implementation to make that check pass.
+On 2026-10-26 the maintainer approved suspending CI's additional strict
+source-patch gate and following the repository's current patch behavior.
+Production jobs now invoke the installed current-wheel patch CLI once in
+`install` mode, and invoke the same CLI in `uninstall` mode during cleanup
+(also after a partially failed install). Nonzero command exits still fail CI.
+There are no production checks of target paths, preimages, markers, mutation
+allowlists, repeated installation, or restored hashes. These checks are not
+silently reported as passed: `patch-report.json` explicitly records
+`mode: repository-cli`, `strict_validation: disabled`, the install outcome
+and the uninstall outcome. It is an execution receipt, not a compatibility
+certificate. The host publisher accepts this receipt instead of requiring a
+passed strict gate. Disposable container/source cleanup and all pytest/model
+result checks remain required. No business patcher, runtime alias or test
+assertion is changed by this decision.
 
-Known business blocker at the PR #15 revision: in
-`lmcache_hcu/integration/patch/vllm/connector_import_patch.py`, `_target_file()`
-uses the runtime-replaced connector module's `find_spec`. Development must
-anchor the path to the real upstream `lmcache` package instead (as the utils
-patcher already does). CI-side changes do not repair that implementation.
+The old `patch-gate`, `patch-cleanup` diagnostic commands and patch manifest
+remain available for explicit investigation only; no workflow invokes them
+and the manifest is no longer a production preflight requirement. A separate
+review is required before restoring that gate.
 
-Validation order after that fix: trusted-controller branch plus tested PR
-revision, current-SHA build/install/patch gate, full pytest inventory,
+Validation order: trusted-controller branch plus tested PR
+revision, current-SHA build/install/repository patch command, full pytest inventory,
 Qwen LocalDisk/POSIX, real PR event, then full Weekly. PR controllers and
 baseline manifests come from the target branch; changing only the PR head's
 CI scripts does not activate them. Do not mark this migration complete based
@@ -84,7 +90,7 @@ Checkout trusted CI controller
 Checkout source under test
 Preflight and initialize
 Build and verify current wheel
-Verify patches and collect tests
+Apply repository patches and prepare selected tests
 Run HCU test suite
 Cleanup, validate and publish
 ```
@@ -92,8 +98,8 @@ Cleanup, validate and publish
 The workflows split those units into visible jobs. `framework-and-pytest`
 builds exactly one current-SHA wheel and runs the complete repository pytest
 inventory. Every selected model scenario then receives its own job, installs
-the already verified framework wheel from `/ci_public`, applies and verifies
-the same source patches in a fresh environment, and runs only that scenario.
+the already verified framework wheel from `/ci_public`, invokes the repository
+patch CLI in a fresh environment, and runs only that scenario.
 The final summary job verifies all child manifests, checksums and completion
 markers before creating the run-level `READY` marker. No GitHub Artifact is
 used and model jobs never rebuild the package.
@@ -321,8 +327,9 @@ git diff --check
 ```
 
 Full wheel and model execution additionally require the reviewed image on the
-selected runner, its cache root, model assets and fixed local test-tool archive. The implementation does
-not weaken a failed compatibility, packaging, patch, pytest or model gate.
+selected runner, its cache root, model assets and fixed local test-tool archive.
+The implementation does not weaken a failed compatibility, packaging, patch-command, pytest or
+model result. Strict source-patch semantic validation is suspended as noted above.
 
 The pinned LMCache v0.4.2 server fixture assumes that its CPU server becomes
 ready within fifteen seconds.  The reviewed HCU image needs about twenty
