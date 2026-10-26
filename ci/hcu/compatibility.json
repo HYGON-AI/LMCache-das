@@ -1,5 +1,10 @@
 {
   "schema_version": 1,
+  "image": {
+    "reference": "42.228.13.241:5000/jenkins/model_test_env/vllm@sha256:b3f4c1b3ef2731c0b387b808b3a85fe50b0dfa54281a537c1b009175ddb3c581",
+    "id": "sha256:cace0172106b3ca4783ccce9c0063e2d11284ea9c5141736e8d24f7aa09d7629"
+  },
+  "required_dependencies": ["sortedcontainers", "aiofile", "aiofiles", "caio"],
   "lmcache": {
     "version": "0.4.2",
     "source_commit": "9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e",

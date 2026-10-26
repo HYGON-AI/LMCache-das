@@ -42,6 +42,14 @@ ALLOWED_CONFIG_FIXES = {
 ALLOWED_CONFIG_OVERRIDES = {
     "qwen3-8b-cpu": {"vllm.gpu-memory-utilization": "0.20"},
 }
+ALLOWED_REMOVED_OPTIONS = {
+    scenario: {"vllm.disable-log-requests": "true"}
+    for scenario in (
+        "qwen3-8b-cpu", "qwen3-8b-localdisk", "qwen3-8b-posix",
+        "deepseek-r1-w4a8-v2-cpu", "deepseek-r1-w4a8-v2-localdisk",
+        "deepseek-r1-w4a8-v2-posix",
+    )
+}
 ALLOWED_LONG_DOC_OPTIONS = {
     "document_length": (1024, 65536),
     "num_documents": (1, 100),
@@ -203,6 +211,7 @@ def validate_manifest(manifest):
         if not isinstance(config_fixes, dict) or set(config_fixes) - {
             "drop_duplicate_options",
             "set_options",
+            "remove_options",
         }:
             raise ModelCIError("scenario {} has unsupported config fixes".format(scenario_id))
         duplicate_options = config_fixes.get("drop_duplicate_options", [])
@@ -223,6 +232,8 @@ def validate_manifest(manifest):
                     scenario_id
                 )
             )
+        if config_fixes.get("remove_options", {}) != ALLOWED_REMOVED_OPTIONS.get(scenario_id, {}):
+            raise ModelCIError("scenario {} removed options differ from the reviewed allowlist".format(scenario_id))
         long_doc_validation = scenario.get("long_doc_validation", "tool")
         if long_doc_validation not in ALLOWED_LONG_DOC_VALIDATIONS:
             raise ModelCIError("scenario {} has an invalid long-document validation".format(scenario_id))
@@ -492,6 +503,32 @@ def override_config_options(text, reviewed_options):
     return "".join(result)
 
 
+def remove_config_options(text, reviewed_options):
+    """Remove only obsolete CLI options with their reviewed original values."""
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    parser.read_string(text)
+    for name, expected in reviewed_options.items():
+        section, option = name.rsplit(".", 1)
+        if parser.get(section, option, fallback=None) != expected:
+            raise ModelCIError("obsolete config option has an unexpected value: {}".format(name))
+    section = ""
+    removed = set()
+    result = []
+    for line in text.splitlines(keepends=True):
+        match = re.match(r"^\s*\[([^]]+)\]\s*$", line)
+        if match:
+            section = match.group(1).strip().lower()
+        option = re.match(r"^\s*([^#;][^:=]*?)\s*[:=]", line)
+        name = "{}.{}".format(section, option.group(1).strip().lower()) if option else ""
+        if name in reviewed_options:
+            removed.add(name)
+        else:
+            result.append(line)
+    if removed != set(reviewed_options):
+        raise ModelCIError("obsolete config options did not match exactly")
+    return "".join(result)
+
+
 def prepare_effective_config(tool_root, scenario, case_id):
     reviewed_root = Path(tool_root).resolve()
     source = (reviewed_root / scenario["config"]).resolve()
@@ -508,6 +545,9 @@ def prepare_effective_config(tool_root, scenario, case_id):
     option_overrides = scenario.get("config_fixes", {}).get("set_options", {})
     if option_overrides:
         text = override_config_options(text, option_overrides)
+    removed_options = scenario.get("config_fixes", {}).get("remove_options", {})
+    if removed_options:
+        text = remove_config_options(text, removed_options)
     destination_root = reviewed_root / "vllm_conf" / ".ci-effective"
     destination_root.mkdir(parents=True, exist_ok=True)
     destination = destination_root / "{}.conf".format(case_id)
@@ -1308,6 +1348,17 @@ def cmd_result_gate(args):
 def cmd_selftest(_args):
     with tempfile.TemporaryDirectory(prefix="lmcache-model-ci-") as temporary:
         root = Path(temporary)
+        obsolete = "[vllm]\ndisable-log-requests = true\nmodel = /llm/models/test\n"
+        adapted = remove_config_options(obsolete, {"vllm.disable-log-requests": "true"})
+        if "disable-log-requests" in adapted or "model = /llm/models/test" not in adapted:
+            raise ModelCIError("obsolete logging option adaptation failed")
+        for bad in (obsolete.replace("= true", "= false"), obsolete.replace("disable-log-requests", "other-option")):
+            try:
+                remove_config_options(bad, {"vllm.disable-log-requests": "true"})
+            except ModelCIError:
+                pass
+            else:
+                raise ModelCIError("unexpected obsolete logging configuration was accepted")
         duplicate_config = """[vllm]
 disable-cascade-attn = true
 trust-remote-code = true

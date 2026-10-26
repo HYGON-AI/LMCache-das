@@ -23,6 +23,7 @@ readonly SHARED_ROOT="${HCU_CI_SHARED_ROOT:-/ci_public/lmcache-das}"
 readonly UPSTREAM_ASSET="${HCU_CI_UPSTREAM_SOURCE:-/ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e}"
 readonly MODEL_MANIFEST="${CONTROLLER_ROOT}/ci/hcu/model-test-manifest.json"
 readonly MODEL_HELPER="${CONTROLLER_ROOT}/ci/hcu/model-ci.py"
+readonly DEPENDENCY_ASSET="/ci_public/lmcache-das/assets/dependencies/v0.4.2-cp310"
 readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
 readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock}"
 readonly CACHE_ROOT="${HCU_CI_CACHE_ROOT:-}"
@@ -381,14 +382,15 @@ host_preflight() {
     [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock" ]]
     mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
     if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
-        [[ "${BASE_IMAGE}" == *@sha256:* ]]
-        docker pull "${BASE_IMAGE}"
+        [[ "${BASE_IMAGE}" == *@sha256:* ]] || return 3
+        docker pull "${BASE_IMAGE}" || return 3
     fi
-    [[ "$(docker image inspect --format '{{.Id}}' "${BASE_IMAGE}")" == "${BASE_IMAGE_ID}" ]]
+    [[ "$(docker image inspect --format '{{.Id}}' "${BASE_IMAGE}")" == "${BASE_IMAGE_ID}" ]] || return 3
     if [[ "${BASE_IMAGE}" == *@sha256:* ]]; then
         docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-            "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}"
+            "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}" || return 3
     fi
+    [[ -d "${DEPENDENCY_ASSET}" && ! -L "${DEPENDENCY_ASSET}" ]] || return 3
 }
 
 validate_configuration() {
@@ -477,6 +479,7 @@ start_test_container() {
         bind_mount_arguments "${CONTROLLER_ROOT}" /opt/ci ro
         bind_mount_arguments "${CHECKOUT_ROOT}" /input/source ro
         bind_mount_arguments "${UPSTREAM_ASSET}" /input/upstream ro
+        bind_mount_arguments "${DEPENDENCY_ASSET}" /input/dependencies ro
     )
     docker run -d --init --name "${CONTAINER_NAME}" \
         --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
@@ -690,12 +693,14 @@ phase_initialize() {
         return 2
     fi
     if ! host_preflight >"${HOST_LOG_ROOT}/host-preflight.log" 2>&1; then
+        tail -n 80 "${HOST_LOG_ROOT}/host-preflight.log" >&2
         write_host_synthetic host-preflight "Host or image preflight failed"
         python3 "${HOST_HELPER}" state-bootstrap-failure "${STATE_ARGS[@]}" \
             --mapped-rc 3 --message 'host or image preflight failed'
         return 3
     fi
     if ! validate_configuration >"${HOST_LOG_ROOT}/configuration.log" 2>&1; then
+        tail -n 80 "${HOST_LOG_ROOT}/configuration.log" >&2
         write_host_synthetic configuration "CI configuration validation failed"
         python3 "${HOST_HELPER}" state-bootstrap-failure "${STATE_ARGS[@]}" \
             --mapped-rc 2 --message 'CI configuration validation failed'
@@ -703,6 +708,7 @@ phase_initialize() {
     fi
     python3 "${HOST_HELPER}" state-init "${STATE_ARGS[@]}"
     if ! prepare_test_tool >"${HOST_LOG_ROOT}/test-tool-prepare.log" 2>&1; then
+        tail -n 80 "${HOST_LOG_ROOT}/test-tool-prepare.log" >&2
         python3 "${HOST_HELPER}" state-abort --state "${STATE_FILE}" \
             --phase initialize --mapped-rc 3 --message 'fixed test-tool archive preparation failed'
         return 3

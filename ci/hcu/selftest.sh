@@ -16,6 +16,8 @@ python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.arg
 python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
     "${SCRIPT_DIR}/aggregate-jobs.py" "${SELFTEST_CACHE}/aggregate-jobs.pyc"
 python3 -m json.tool "${SCRIPT_DIR}/compatibility.json" >/dev/null
+python3 -m json.tool "${SCRIPT_DIR}/dependency-lock.json" >/dev/null
+python3 -m json.tool "${SCRIPT_DIR}/disabled-tests.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/patch-manifest.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/test-baseline.json" >/dev/null
 python3 -m json.tool "${SCRIPT_DIR}/model-test-manifest.json" >/dev/null
@@ -83,6 +85,8 @@ if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) els
     python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
         "${SCRIPT_DIR}/ci.py" "${SELFTEST_CACHE}/ci.pyc"
     python3 "${SCRIPT_DIR}/ci.py" selftest
+    python3 "${SCRIPT_DIR}/test_ci_042.py"
+    python3 "${SCRIPT_DIR}/test_ci_disabled.py"
 else
     printf '%s\n' \
         'Host Python is older than 3.10; ci.py syntax/helper checks must run in the reviewed test image.'
