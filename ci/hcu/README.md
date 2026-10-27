@@ -24,6 +24,25 @@ disabled nodes are neither successful tests nor pytest skips. Inventory,
 collection logs and `summary.md` expose the exclusions. New tests are still
 automatically collected, and any other failure, skip or xfail still fails CI.
 
+The host importer permits the exact `disabled-tests.json` metadata filename,
+subject to the existing size, regular-file and no-link checks. It does not
+permit arbitrary new JSON files. Before publication the host compares that
+copy and the inventory manifest SHA with the trusted controller manifest,
+then verifies that active nodes are exactly complete collection minus the
+approved exclusions. Required-file/definition baselines use complete
+collection; JUnit counts use only active nodes times repetitions. Neither
+stale exclusions, unapproved omissions nor missing executed results can pass.
+This fixes the report-import failure in run `40303494607`: its 155 pytest
+cases passed, but the missing output allowlist entry prevented publication
+and therefore prevented model jobs from starting.
+The required-definition baseline also follows the five test-name replacements
+already made by the developer's 0.4.2 adaptation (custom Flash Attention,
+tuple KV layout and hidden-dimension checks), and explicitly includes the
+custom-attention default-off assertion. A device-free AST regression checks
+the required definitions in the two locally adapted attention test files;
+all definitions, including upstream re-exports, remain checked at collection.
+No test assertion or approved exclusion is changed by this synchronization.
+
 The disabled nodes are the two storage-factory tests
 `test_create_storage_backends_adds_xds_backend` and
 `test_create_storage_backends_does_not_add_xds_without_xds_path`, plus the
