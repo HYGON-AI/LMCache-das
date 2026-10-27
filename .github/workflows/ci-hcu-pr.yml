@@ -13,8 +13,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  storage-preflight:
+    name: storage-preflight-${{ matrix.job_key }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job_key: framework
+            job_role: framework
+            model_profile: framework
+            runner_kind: nmz1
+            visible_devices: "0"
+          - job_key: qwen-localdisk
+            job_role: model
+            model_profile: pr-qwen-localdisk
+            runner_kind: nmz2
+            visible_devices: "0,1"
+          - job_key: qwen-posix
+            job_role: model
+            model_profile: pr-qwen-posix
+            runner_kind: nmz3
+            visible_devices: "0,1"
+    uses: ./.github/workflows/ci-hcu-reusable.yml
+    with:
+      controller_ref: ${{ github.event.pull_request.base.sha }}
+      source_ref: refs/pull/${{ github.event.pull_request.number }}/merge
+      logical_profile: pr
+      storage_preflight_only: true
+      model_profile: ${{ matrix.model_profile }}
+      job_role: ${{ matrix.job_role }}
+      job_key: ${{ matrix.job_key }}
+      runner_kind: ${{ matrix.runner_kind }}
+      visible_devices: ${{ matrix.visible_devices }}
+      repeat: "1"
+      timeout_minutes: 15
+      phase_timeout_seconds: "300"
+      container_memory: 56g
+      is_pr: true
+      expected_base_sha: ${{ github.event.pull_request.base.sha }}
+      expected_head_sha: ${{ github.event.pull_request.head.sha }}
+
   framework:
     name: framework-and-pytest
+    needs: storage-preflight
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
       controller_ref: ${{ github.event.pull_request.base.sha }}
@@ -68,7 +109,7 @@ jobs:
 
   aggregate:
     name: hcu-tests
-    needs: [framework, model-tests]
+    needs: [storage-preflight, framework, model-tests]
     if: >-
       ${{
         always() &&
@@ -88,6 +129,10 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.framework.outputs.source_sha }}
         run: |
+          if [[ "${{ needs.storage-preflight.result }}" != "success" ]]; then
+            echo '::error::Infrastructure storage/mount preflight failed; no wheel/model work was started.'
+            exit 3
+          fi
           [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           python3 ci/hcu/aggregate-jobs.py \
             --shared-root /ci_public/lmcache-das \

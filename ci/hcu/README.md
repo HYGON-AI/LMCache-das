@@ -318,6 +318,89 @@ tool-level `result=success` cannot hide partial responses such as 20/50 or 19/50
 
 ## Reports
 
+### Storage and mount contract
+
+PR CI first runs a short `storage-preflight` matrix on nmz1/nmz2/nmz3. All
+three must pass before the single framework wheel is built. Every normal job
+repeats its own checks at initialization, including manual/weekly jobs, without
+expanding their selected workload. Preflight uses the trusted base controller,
+not scripts from the PR source checkout.
+
+The publication root `/ci_public/lmcache-das` and each configured per-runner
+cache root must already be provisioned by the node administrator. Publication
+parents must share the root's group, permit runner group read/write/traversal,
+and not be world-writable or symlinks. CI sets mode 2770 only on parents it
+creates; it never chmods/chowns an existing shared directory. This supports
+nodes with different runner UIDs in the same NFS group. A real write/read-back,
+rename, file-fsync and directory-fsync probe checks the destination before work.
+
+Cache roots are independent configuration, not implicitly approved just because
+they sit under `/ci_public`. Model jobs allocate one exclusive run subtree and
+mount only its CPU, LocalDisk, SSD and POSIX children read-write at `/mnt/fs1`,
+`/local_disk`, `/ssd` and `/mnt/parastor_storage`. Model assets and the tested
+wheel remain read-only. Before GPU work, a 60-second, device-less, network-less,
+read-only-root container exercises these exact cache/model binds through the
+real organization Docker wrapper. It requests no GPU, privileged mode, Docker
+socket or host networking. The probe and its exact cache subtree are cleaned
+on success/failure and normal cancellation; an uncleanable resource fails CI.
+
+For example, run `40432801627` exposed two infrastructure faults after pytest
+passed: nmz2 attempted to chmod another UID's group-writable archive parent;
+nmz3's wrapper denied `/ci_public/lmcache-das/cache/nmz3/<run-key>/cpu`.
+The publisher fixes the former. The latter requires a node administrator to
+approve an appropriately scoped cache root (all four child binds), or provide
+an already approved cache root and update `LMCACHE_HCU_CACHE_ROOT_NMZ3`.
+This controller does not modify the wrapper, permissions or repository variables
+to grant itself access. Preflight remains red until that contract is satisfied.
+
+### Durable evidence and report-only recovery
+
+Before disposable workspace cleanup or publication, each job snapshots its
+host-validated spool to `~/.lmcache-hcu-evidence/<run-key>/` on that same runner.
+This fixed, runner-owned mode-0700 directory is outside `RUNNER_TEMP` and never
+mounted into a test container. An atomic, fsynced receipt binds every retained
+file hash to the run, source/controller SHAs, trusted baseline/model-manifest
+hashes and original primary/cleanup exits. The temporary workspace can then
+be removed without losing reports when NFS publication fails.
+
+After an operator fixes storage access, use the original trusted controller
+checkout on the original runner, without rebuilding a wheel or starting a model:
+
+```bash
+python3 ci/hcu/host.py republish \
+  --evidence "$HOME/.lmcache-hcu-evidence/<run-key>" \
+  --sha <original-source-sha> --controller-sha <original-controller-sha> \
+  --baseline ci/hcu/test-baseline.json \
+  --model-manifest ci/hcu/model-test-manifest.json
+```
+
+Recovery verifies the actual controller HEAD, receipt, identities and file
+hashes; an originally successful execution must again pass the full inventory,
+JUnit and model-result validation. Original execution/cleanup failures remain
+failed. An identical completed archive is accepted only after whole-inventory
+checksum verification; a different archive or partial staging destination is
+never overwritten. Inspect/preserve any partial destination before an explicitly
+authorized, precisely scoped operator cleanup. Republish does not retroactively
+turn a failed GitHub Actions run green or automatically rerun dependent jobs.
+
+`manifest.json` and the summary distinguish execution, host validation, cleanup
+and publication exits. A publish-only failure is still a failed CI job, not a
+model failure or a successful full pipeline. `READY` proves child publication
+completion, not success; the aggregate still checks every child's status.
+
+Evidence is retained after both successful and failed publication; there is no
+background deletion policy in this change. Operators should monitor capacity
+and remove only an exact verified run directory after checking its formal
+`READY`/`SHA256SUMS` archive and the agreed retention period. Do not place this
+directory under the runner's automatic temporary-directory cleanup.
+
+This strategy adapts the existing-directory checks and atomic publication in
+[HYGON-AI/sglang-das's publisher](https://github.com/HYGON-AI/sglang-das/blob/15c7204b7a3b6edaa222cff80018d8e5f2b2ad0e/scripts/ci/hcu/hcu_ci_publish_reasoning_code.py),
+and the separation of build/test and release in
+[HYGON-AI/lightop](https://github.com/HYGON-AI/lightop/blob/171900e16cd8b2862fcfe1423645898f1a3d0a56/.github/workflows/pr-test.yml).
+It does not copy their privileged-container settings or change the reviewed
+image, original patch CLI, approved disabled tests, model work or archive root.
+
 Results are atomically published under:
 
 ```text

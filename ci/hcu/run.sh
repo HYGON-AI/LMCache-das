@@ -48,8 +48,10 @@ STATE_FILE=""
 CONTAINER_NAME=""
 LEASE_CONTAINER=""
 NETWORK_NAME=""
+STORAGE_PROBE_CONTAINER=""
 TEST_TOOL_ROOT=""
 CACHE_RUN_ROOT=""
+CACHE_RUN_CREATED=false
 PREBUILT_WHEEL_ROOT=""
 SOURCE_STATUS=""
 SOURCE_STATUS_SHA256=""
@@ -84,12 +86,12 @@ ensure_within() {
 
 bind_mount_arguments() {
     local host_path="$1" container_path="$2" access="$3" resolved_host
-    [[ "${host_path}" == /* && "${container_path}" == /* ]]
-    [[ "${access}" == "ro" || "${access}" == "rw" ]]
-    [[ "${host_path}" != *:* && "${container_path}" != *:* ]]
-    [[ -e "${host_path}" ]]
-    resolved_host="$(readlink -e -- "${host_path}")"
-    [[ -n "${resolved_host}" && -d "${resolved_host}" && "${resolved_host}" != *:* ]]
+    [[ "${host_path}" == /* && "${container_path}" == /* ]] || return 3
+    [[ "${access}" == "ro" || "${access}" == "rw" ]] || return 3
+    [[ "${host_path}" != *:* && "${container_path}" != *:* ]] || return 3
+    [[ -e "${host_path}" ]] || return 3
+    resolved_host="$(readlink -e -- "${host_path}")" || return 3
+    [[ -n "${resolved_host}" && -d "${resolved_host}" && "${resolved_host}" != *:* ]] || return 3
     # The organization Docker wrapper rejects bind mounts expressed with
     # --mount, but accepts the equivalent validated -v form. Emit each token
     # separately so callers can consume it into an array without word splitting.
@@ -110,6 +112,7 @@ resolve_context() {
     SOURCE_STATUS="$(git -C "${CHECKOUT_ROOT}" status --porcelain=v1 --untracked-files=all)"
     SOURCE_STATUS_SHA256="$(printf '%s' "${SOURCE_STATUS}" | sha256sum | awk '{print $1}')"
     RUN_KEY="${RUN_ID}-${ATTEMPT}-${SOURCE_SHA:0:12}-${JOB_KEY}"
+    if [[ "${COMMAND}" == "storage-preflight" ]]; then RUN_KEY+="-preflight"; fi
     safe_token "${RUN_ID}" && safe_token "${ATTEMPT}" && \
         safe_token "${JOB_KEY}" && safe_token "${RUN_KEY}"
     WORK_ROOT="${WORK_BASE}/${RUN_KEY}"
@@ -122,6 +125,7 @@ resolve_context() {
     CONTAINER_NAME="lmcache-hcu-ci-${RUN_KEY}"
     LEASE_CONTAINER="lmcache-hcu-lease-${RUN_KEY}"
     NETWORK_NAME="lmcache-hcu-net-${RUN_KEY}"
+    STORAGE_PROBE_CONTAINER="lmcache-hcu-storage-probe-${RUN_KEY}"
     TEST_TOOL_ROOT="${TRUSTED_STATE_ROOT}/test-tool"
     if [[ "${JOB_ROLE}" == "model" ]]; then
         PREBUILT_WHEEL_ROOT="${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework/wheels"
@@ -276,48 +280,53 @@ visible_device_count() {
 
 validate_cache_root() {
     model_tests_required || return 0
-    [[ -n "${CACHE_ROOT}" && "${CACHE_ROOT}" == /* ]]
-    [[ "${CACHE_ROOT}" == *"/lmcache-das/"* ]]
+    [[ -n "${CACHE_ROOT}" && "${CACHE_ROOT}" == /* ]] || return 3
+    [[ "${CACHE_ROOT}" == *"/lmcache-das/"* ]] || return 3
     [[ "${CACHE_ROOT}" != "/" && "${CACHE_ROOT}" != "/tmp" && \
        "${CACHE_ROOT}" != "/home" && "${CACHE_ROOT}" != "/ci_public" && \
-       "${CACHE_ROOT}" != "/ci_public/lmcache-das" ]]
-    mkdir -p "${CACHE_ROOT}"
-    [[ -d "${CACHE_ROOT}" && ! -L "${CACHE_ROOT}" ]]
-    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
-    [[ ! -e "${CACHE_RUN_ROOT}" ]]
+       "${CACHE_ROOT}" != "/ci_public/lmcache-das" ]] || return 3
+    # Cache roots are provisioned/approved by operators, never invented by CI.
+    [[ -d "${CACHE_ROOT}" && ! -L "${CACHE_ROOT}" ]] || return 3
+    [[ "$(readlink -e -- "${CACHE_ROOT}")" == "${CACHE_ROOT}" ]] || return 3
+    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}" || return 3
+    [[ ! -e "${CACHE_RUN_ROOT}" && ! -L "${CACHE_RUN_ROOT}" ]] || return 3
+    mkdir -- "${CACHE_RUN_ROOT}" || return 3
+    CACHE_RUN_CREATED=true
     mkdir -p "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
-        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
+        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix" || return 3
     # Docker user-namespace remapping means container root is not the host
     # runner user. These run-scoped, non-secret cache mounts must be writable
     # by that remapped identity; the parent remains private and the complete
     # run directory is removed during finalization.
     chmod 0777 "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
-        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
+        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix" || return 3
     local directory probe
     for directory in cpu localdisk ssd posix; do
         probe="${CACHE_RUN_ROOT}/${directory}/.direct-io-probe"
-        dd if=/dev/zero of="${probe}" bs=4096 count=1 oflag=direct status=none
-        rm -f -- "${probe}"
+        dd if=/dev/zero of="${probe}" bs=4096 count=1 oflag=direct status=none || return 3
+        rm -f -- "${probe}" || return 3
     done
 }
 
 model_mount_arguments() {
     model_tests_required || return 0
-    local host_path container_path
+    local host_path container_path selected_mounts
+    selected_mounts="$(python3 "${MODEL_HELPER}" mounts \
+        --manifest "${MODEL_MANIFEST}" --profile "${MODEL_PROFILE}")" || return 3
+    [[ -n "${selected_mounts}" ]] || return 3
     while IFS=$'\t' read -r host_path container_path; do
         if [[ "${container_path}" == /llm/models/* ]]; then
-            [[ "${host_path}" == /public/* ]]
+            [[ "${host_path}" == /public/* ]] || return 3
         elif [[ "${container_path}" == "/public/ai_data/datasets/data" ]]; then
-            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data" ]]
+            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data" ]] || return 3
         elif [[ "${container_path}" == "/public/ai_data/datasets/cmmlu" ]]; then
-            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data/cmmlu" ]]
+            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data/cmmlu" ]] || return 3
         else
             return 3
         fi
-        [[ -d "${host_path}" && ! -L "${host_path}" ]]
-        bind_mount_arguments "${host_path}" "${container_path}" ro
-    done < <(python3 "${MODEL_HELPER}" mounts \
-        --manifest "${MODEL_MANIFEST}" --profile "${MODEL_PROFILE}")
+        [[ -d "${host_path}" && ! -L "${host_path}" ]] || return 3
+        bind_mount_arguments "${host_path}" "${container_path}" ro || return 3
+    done <<<"${selected_mounts}"
 }
 
 prepare_test_tool() {
@@ -375,12 +384,20 @@ host_preflight() {
     python3 "${MODEL_HELPER}" validate --manifest "${MODEL_MANIFEST}" \
         --profile "${MODEL_PROFILE}" --runner "${RUNNER_KIND}" \
         --visible-devices "${VISIBLE_DEVICES}" >/dev/null
-    validate_cache_root
-    model_mount_arguments >/dev/null
+    validate_cache_root || return 3
+    model_mount_arguments >/dev/null || return 3
     verify_prebuilt_wheel
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
     [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock" ]]
-    mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
+    mkdir -p "$(dirname "${RUNNER_LOCK}")"
+    verify_image || return 3
+    storage_checks || return 3
+    [[ -d "${DEPENDENCY_ASSET}" && ! -L "${DEPENDENCY_ASSET}" ]] || return 3
+}
+
+verify_image() {
+    [[ "${BASE_IMAGE}" =~ ^[A-Za-z0-9._:/-]+(:[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$ ]] || return 3
+    [[ "${BASE_IMAGE_ID}" =~ ^sha256:[0-9a-f]{64}$ ]] || return 3
     if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
         [[ "${BASE_IMAGE}" == *@sha256:* ]] || return 3
         docker pull "${BASE_IMAGE}" || return 3
@@ -390,8 +407,69 @@ host_preflight() {
         docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
             "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}" || return 3
     fi
-    [[ -d "${DEPENDENCY_ASSET}" && ! -L "${DEPENDENCY_ASSET}" ]] || return 3
 }
+
+storage_checks() {
+    python3 "${HOST_HELPER}" publication-preflight \
+        --shared-root "${SHARED_ROOT}" --profile "${PROFILE}" \
+        --run-id "${RUN_ID}" --attempt "${ATTEMPT}" --sha "${SOURCE_SHA}" \
+        --run-key "${RUN_KEY}" || return 3
+    model_tests_required || return 0
+    model_mount_arguments >/dev/null || return 3
+    local -a mounts=()
+    local value
+    while IFS= read -r -d '' value; do mounts+=("${value}"); done < <(
+        bind_mount_arguments "${CACHE_RUN_ROOT}/cpu" /mnt/fs1 rw
+        bind_mount_arguments "${CACHE_RUN_ROOT}/localdisk" /local_disk rw
+        bind_mount_arguments "${CACHE_RUN_ROOT}/ssd" /ssd rw
+        bind_mount_arguments "${CACHE_RUN_ROOT}/posix" /mnt/parastor_storage rw
+        model_mount_arguments
+    )
+    # A short, device-less container exercises the real organization wrapper.
+    # No GPU, host network, Docker socket or privilege escalation is requested.
+    local probe_rc=0
+    timeout --signal=TERM --kill-after=10s 60s \
+        docker run --name "${STORAGE_PROBE_CONTAINER}" \
+        --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
+        --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+        --cpus 1 --memory 256m --pids-limit 64 --entrypoint /bin/true \
+        "${mounts[@]}" "${BASE_IMAGE}" || probe_rc=$?
+    if ! remove_named_container "${STORAGE_PROBE_CONTAINER}"; then
+        printf 'Infrastructure preflight container cleanup failed: %s\n' "${STORAGE_PROBE_CONTAINER}" >&2
+        return 3
+    fi
+    if (( probe_rc != 0 )); then
+        printf 'Infrastructure preflight: Docker rejected or could not use the configured mounts.\n' >&2
+        printf 'Cache root=%s; runner=%s; no GPU/model work was started.\n' "${CACHE_ROOT}" "${RUNNER_KIND}" >&2
+        return 3
+    fi
+}
+
+phase_storage_preflight() (
+    [[ "${HCU_CI_ISOLATED_RUNNER:-}" == "true" ]] || return 3
+    [[ ! -e "${WORK_ROOT}" ]] || return 3
+    [[ "${RUNNER_KIND}" =~ ^nmz[1-5]$ ]] || return 3
+    [[ "${JOB_ROLE}" == "framework" || "${JOB_ROLE}" == "model" ]] || return 3
+    # Cancellation and failures must clean only resources created by this probe.
+    trap 'probe_status=$?; trap - EXIT; remove_named_container "${STORAGE_PROBE_CONTAINER}" || probe_status=3; if [[ "${CACHE_RUN_CREATED}" == true ]]; then cleanup_cache_run || probe_status=3; fi; exit "${probe_status}"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    check_pr_revision || return 2
+    local result=0
+    # Keep this before framework compilation in the PR DAG; also repeat it at
+    # initialize to catch changes while a runner was queued.
+    verify_image || result=3
+    python3 "${MODEL_HELPER}" validate --manifest "${MODEL_MANIFEST}" \
+        --profile "${MODEL_PROFILE}" --runner "${RUNNER_KIND}" \
+        --visible-devices "${VISIBLE_DEVICES}" >/dev/null || result=3
+    if (( result == 0 )); then
+        validate_cache_root || result=3
+    fi
+    if (( result == 0 )); then
+        storage_checks || result=3
+    fi
+    return "${result}"
+)
 
 validate_configuration() {
     local -a bind_args=()
@@ -668,8 +746,8 @@ cleanup_internal_network() {
 
 cleanup_cache_run() {
     [[ -n "${CACHE_RUN_ROOT}" ]] || return 0
-    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
-    [[ ! -L "${CACHE_RUN_ROOT}" ]]
+    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}" || return 1
+    [[ ! -L "${CACHE_RUN_ROOT}" ]] || return 1
     if [[ -e "${CACHE_RUN_ROOT}" ]]; then
         rm -rf -- "${CACHE_RUN_ROOT}"
     fi
@@ -868,14 +946,15 @@ phase_finalize() {
 
 main() {
     case "${COMMAND}" in
-        initialize|build|prepare-tests|test|finalize) ;;
+        initialize|build|prepare-tests|test|finalize|storage-preflight) ;;
         *)
-            printf 'Usage: %s {initialize|build|prepare-tests|test|finalize}\n' "$0" >&2
+            printf 'Usage: %s {storage-preflight|initialize|build|prepare-tests|test|finalize}\n' "$0" >&2
             return 2
             ;;
     esac
     resolve_context || return 2
     case "${COMMAND}" in
+        storage-preflight) phase_storage_preflight ;;
         initialize) phase_initialize ;;
         build) phase_build ;;
         prepare-tests) phase_prepare_tests ;;
