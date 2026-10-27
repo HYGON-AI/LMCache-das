@@ -205,6 +205,9 @@ storage_checks
         self.assertIn("storage_preflight_only: true", pr)
         self.assertIn("!inputs.storage_preflight_only", reusable)
         self.assertIn("no wheel/model work was started", pr)
+        hcu_job_condition = reusable.split("  hcu:", 1)[1].split("    runs-on:", 1)[0]
+        self.assertIn("!cancelled()", hcu_job_condition)
+        self.assertNotIn("always()", hcu_job_condition)
 
     def test_probe_failure_and_cancellation_cleanup_only_new_cache(self):
         shell = (ROOT / "run.sh").read_text(encoding="utf-8").rsplit("\nmain", 1)[0]

@@ -113,6 +113,7 @@ jobs:
     if: >-
       ${{
         always() &&
+        !cancelled() &&
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}

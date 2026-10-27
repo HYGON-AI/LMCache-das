@@ -343,6 +343,11 @@ read-only-root container exercises these exact cache/model binds through the
 real organization Docker wrapper. It requests no GPU, privileged mode, Docker
 socket or host networking. The probe and its exact cache subtree are cleaned
 on success/failure and normal cancellation; an uncleanable resource fails CI.
+The reusable job itself uses `!cancelled()` rather than `always()`, so a user
+cancel request can stop work; the normal execution's finalizer still uses an
+always-run step for cleanup. PR aggregation reports failures but does not start
+after cancellation. Hard runner/process termination still requires an exact
+run-key resource check; no shell trap can guarantee cleanup after SIGKILL.
 
 For example, run `40432801627` exposed two infrastructure faults after pytest
 passed: nmz2 attempted to chmod another UID's group-writable archive parent;
