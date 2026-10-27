@@ -26,8 +26,8 @@ readonly MODEL_HELPER="${CONTROLLER_ROOT}/ci/hcu/model-ci.py"
 readonly DEPENDENCY_ASSET="/ci_public/lmcache-das/assets/dependencies/v0.4.2-cp310"
 readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
 readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock}"
-readonly CACHE_ROOT="${HCU_CI_CACHE_ROOT:-}"
 readonly RUNNER_TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
+readonly CACHE_ROOT="${RUNNER_TEMP_ROOT}/lmcache-hcu-cache"
 readonly CONTAINER_MEMORY="${HCU_CI_CONTAINER_MEMORY:-56g}"
 readonly CONTAINER_CPUS="${HCU_CI_CONTAINER_CPUS:-32}"
 readonly OUTPUT_LIMIT="${HCU_CI_OUTPUT_LIMIT:-3g}"
@@ -48,10 +48,8 @@ STATE_FILE=""
 CONTAINER_NAME=""
 LEASE_CONTAINER=""
 NETWORK_NAME=""
-STORAGE_PROBE_CONTAINER=""
 TEST_TOOL_ROOT=""
 CACHE_RUN_ROOT=""
-CACHE_RUN_CREATED=false
 PREBUILT_WHEEL_ROOT=""
 SOURCE_STATUS=""
 SOURCE_STATUS_SHA256=""
@@ -112,7 +110,6 @@ resolve_context() {
     SOURCE_STATUS="$(git -C "${CHECKOUT_ROOT}" status --porcelain=v1 --untracked-files=all)"
     SOURCE_STATUS_SHA256="$(printf '%s' "${SOURCE_STATUS}" | sha256sum | awk '{print $1}')"
     RUN_KEY="${RUN_ID}-${ATTEMPT}-${SOURCE_SHA:0:12}-${JOB_KEY}"
-    if [[ "${COMMAND}" == "storage-preflight" ]]; then RUN_KEY+="-preflight"; fi
     safe_token "${RUN_ID}" && safe_token "${ATTEMPT}" && \
         safe_token "${JOB_KEY}" && safe_token "${RUN_KEY}"
     WORK_ROOT="${WORK_BASE}/${RUN_KEY}"
@@ -125,10 +122,9 @@ resolve_context() {
     CONTAINER_NAME="lmcache-hcu-ci-${RUN_KEY}"
     LEASE_CONTAINER="lmcache-hcu-lease-${RUN_KEY}"
     NETWORK_NAME="lmcache-hcu-net-${RUN_KEY}"
-    STORAGE_PROBE_CONTAINER="lmcache-hcu-storage-probe-${RUN_KEY}"
     TEST_TOOL_ROOT="${TRUSTED_STATE_ROOT}/test-tool"
     if [[ "${JOB_ROLE}" == "model" ]]; then
-        PREBUILT_WHEEL_ROOT="${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework/wheels"
+        PREBUILT_WHEEL_ROOT="${SHARED_ROOT}/wheels/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework/wheels"
     fi
     if [[ -n "${CACHE_ROOT}" ]]; then
         CACHE_RUN_ROOT="${CACHE_ROOT}/${RUN_KEY}"
@@ -229,7 +225,7 @@ verify_prebuilt_wheel() {
     local framework_root staged_root staged_wheel
     framework_root="$(dirname "${PREBUILT_WHEEL_ROOT}")"
     [[ "$(readlink -m -- "${framework_root}")" == \
-        "${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework" ]]
+        "${SHARED_ROOT}/wheels/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework" ]] || return 3
     if [[ ! -x "${framework_root}" || ! -r "${framework_root}" ]]; then
         printf 'Framework archive is not traversable/readable: %s\n' "${framework_root}" >&2
         stat -c 'mode=%A uid=%u gid=%g path=%n' "${framework_root}" >&2 || true
@@ -243,7 +239,8 @@ verify_prebuilt_wheel() {
             return 3
         fi
     done
-    python3 - "${framework_root}/manifest.json" "${SOURCE_SHA}" <<'PY'
+    python3 - "${framework_root}/manifest.json" "${SOURCE_SHA}" \
+        "${CONTROLLER_SHA}" "${RUN_ID}" "${ATTEMPT}" <<'PY' || return 3
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
@@ -252,23 +249,26 @@ assert manifest.get("status") == "passed"
 assert manifest.get("source_sha") == sys.argv[2]
 assert manifest.get("job_role") == "framework"
 assert manifest.get("job_key") == "framework"
+assert manifest.get("controller_sha") == sys.argv[3]
+assert manifest.get("run_id") == sys.argv[4]
+assert manifest.get("attempt") == sys.argv[5]
 PY
-    (cd "${framework_root}" && sha256sum -c SHA256SUMS >/dev/null)
+    (cd "${framework_root}" && sha256sum -c SHA256SUMS >/dev/null) || return 3
     local -a wheels=()
     mapfile -t wheels < <(find "${PREBUILT_WHEEL_ROOT}" -maxdepth 1 \
         -type f -name '*.whl' -print | LC_ALL=C sort)
-    (( ${#wheels[@]} == 1 ))
+    (( ${#wheels[@]} == 1 )) || return 3
 
     # Expose only the verified wheel from a per-job trusted staging directory.
     # The shared archive is group-readable across organization runners, but it
     # is never mounted into an untrusted test container.
     staged_root="${TRUSTED_STATE_ROOT}/prebuilt-wheel"
     [[ ! -L "${staged_root}" ]]
-    install -d -m 0755 -- "${staged_root}"
+    install -d -m 0755 -- "${staged_root}" || return 3
     staged_wheel="${staged_root}/$(basename "${wheels[0]}")"
-    install -m 0444 -- "${wheels[0]}" "${staged_wheel}"
+    install -m 0444 -- "${wheels[0]}" "${staged_wheel}" || return 3
     [[ "$(sha256sum "${staged_wheel}" | awk '{print $1}')" == \
-        "$(sha256sum "${wheels[0]}" | awk '{print $1}')" ]]
+        "$(sha256sum "${wheels[0]}" | awk '{print $1}')" ]] || return 3
     PREBUILT_WHEEL_ROOT="${staged_root}"
 }
 
@@ -280,18 +280,16 @@ visible_device_count() {
 
 validate_cache_root() {
     model_tests_required || return 0
-    [[ -n "${CACHE_ROOT}" && "${CACHE_ROOT}" == /* ]] || return 3
-    [[ "${CACHE_ROOT}" == *"/lmcache-das/"* ]] || return 3
-    [[ "${CACHE_ROOT}" != "/" && "${CACHE_ROOT}" != "/tmp" && \
-       "${CACHE_ROOT}" != "/home" && "${CACHE_ROOT}" != "/ci_public" && \
-       "${CACHE_ROOT}" != "/ci_public/lmcache-das" ]] || return 3
-    # Cache roots are provisioned/approved by operators, never invented by CI.
-    [[ -d "${CACHE_ROOT}" && ! -L "${CACHE_ROOT}" ]] || return 3
+    # Runner-owned scratch is already allowed by the organization wrapper.
+    # Never mount the shared report tree as a writable test cache.
+    [[ -d "${RUNNER_TEMP_ROOT}" && ! -L "${RUNNER_TEMP_ROOT}" ]] || return 3
+    ensure_within "${CACHE_ROOT}" "${RUNNER_TEMP_ROOT}" || return 3
+    [[ ! -L "${CACHE_ROOT}" ]] || return 3
+    mkdir -p "${CACHE_ROOT}" || return 3
     [[ "$(readlink -e -- "${CACHE_ROOT}")" == "${CACHE_ROOT}" ]] || return 3
     ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}" || return 3
     [[ ! -e "${CACHE_RUN_ROOT}" && ! -L "${CACHE_RUN_ROOT}" ]] || return 3
     mkdir -- "${CACHE_RUN_ROOT}" || return 3
-    CACHE_RUN_CREATED=true
     mkdir -p "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
         "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix" || return 3
     # Docker user-namespace remapping means container root is not the host
@@ -386,18 +384,10 @@ host_preflight() {
         --visible-devices "${VISIBLE_DEVICES}" >/dev/null
     validate_cache_root || return 3
     model_mount_arguments >/dev/null || return 3
-    verify_prebuilt_wheel
+    verify_prebuilt_wheel || return 3
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
     [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock" ]]
-    mkdir -p "$(dirname "${RUNNER_LOCK}")"
-    verify_image || return 3
-    storage_checks || return 3
-    [[ -d "${DEPENDENCY_ASSET}" && ! -L "${DEPENDENCY_ASSET}" ]] || return 3
-}
-
-verify_image() {
-    [[ "${BASE_IMAGE}" =~ ^[A-Za-z0-9._:/-]+(:[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$ ]] || return 3
-    [[ "${BASE_IMAGE_ID}" =~ ^sha256:[0-9a-f]{64}$ ]] || return 3
+    mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
     if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
         [[ "${BASE_IMAGE}" == *@sha256:* ]] || return 3
         docker pull "${BASE_IMAGE}" || return 3
@@ -407,69 +397,8 @@ verify_image() {
         docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
             "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}" || return 3
     fi
+    [[ -d "${DEPENDENCY_ASSET}" && ! -L "${DEPENDENCY_ASSET}" ]] || return 3
 }
-
-storage_checks() {
-    python3 "${HOST_HELPER}" publication-preflight \
-        --shared-root "${SHARED_ROOT}" --profile "${PROFILE}" \
-        --run-id "${RUN_ID}" --attempt "${ATTEMPT}" --sha "${SOURCE_SHA}" \
-        --run-key "${RUN_KEY}" || return 3
-    model_tests_required || return 0
-    model_mount_arguments >/dev/null || return 3
-    local -a mounts=()
-    local value
-    while IFS= read -r -d '' value; do mounts+=("${value}"); done < <(
-        bind_mount_arguments "${CACHE_RUN_ROOT}/cpu" /mnt/fs1 rw
-        bind_mount_arguments "${CACHE_RUN_ROOT}/localdisk" /local_disk rw
-        bind_mount_arguments "${CACHE_RUN_ROOT}/ssd" /ssd rw
-        bind_mount_arguments "${CACHE_RUN_ROOT}/posix" /mnt/parastor_storage rw
-        model_mount_arguments
-    )
-    # A short, device-less container exercises the real organization wrapper.
-    # No GPU, host network, Docker socket or privilege escalation is requested.
-    local probe_rc=0
-    timeout --signal=TERM --kill-after=10s 60s \
-        docker run --name "${STORAGE_PROBE_CONTAINER}" \
-        --label lmcache-hcu-ci.run-key="${RUN_KEY}" \
-        --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
-        --cpus 1 --memory 256m --pids-limit 64 --entrypoint /bin/true \
-        "${mounts[@]}" "${BASE_IMAGE}" || probe_rc=$?
-    if ! remove_named_container "${STORAGE_PROBE_CONTAINER}"; then
-        printf 'Infrastructure preflight container cleanup failed: %s\n' "${STORAGE_PROBE_CONTAINER}" >&2
-        return 3
-    fi
-    if (( probe_rc != 0 )); then
-        printf 'Infrastructure preflight: Docker rejected or could not use the configured mounts.\n' >&2
-        printf 'Cache root=%s; runner=%s; no GPU/model work was started.\n' "${CACHE_ROOT}" "${RUNNER_KIND}" >&2
-        return 3
-    fi
-}
-
-phase_storage_preflight() (
-    [[ "${HCU_CI_ISOLATED_RUNNER:-}" == "true" ]] || return 3
-    [[ ! -e "${WORK_ROOT}" ]] || return 3
-    [[ "${RUNNER_KIND}" =~ ^nmz[1-5]$ ]] || return 3
-    [[ "${JOB_ROLE}" == "framework" || "${JOB_ROLE}" == "model" ]] || return 3
-    # Cancellation and failures must clean only resources created by this probe.
-    trap 'probe_status=$?; trap - EXIT; remove_named_container "${STORAGE_PROBE_CONTAINER}" || probe_status=3; if [[ "${CACHE_RUN_CREATED}" == true ]]; then cleanup_cache_run || probe_status=3; fi; exit "${probe_status}"' EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    check_pr_revision || return 2
-    local result=0
-    # Keep this before framework compilation in the PR DAG; also repeat it at
-    # initialize to catch changes while a runner was queued.
-    verify_image || result=3
-    python3 "${MODEL_HELPER}" validate --manifest "${MODEL_MANIFEST}" \
-        --profile "${MODEL_PROFILE}" --runner "${RUNNER_KIND}" \
-        --visible-devices "${VISIBLE_DEVICES}" >/dev/null || result=3
-    if (( result == 0 )); then
-        validate_cache_root || result=3
-    fi
-    if (( result == 0 )); then
-        storage_checks || result=3
-    fi
-    return "${result}"
-)
 
 validate_configuration() {
     local -a bind_args=()
@@ -937,7 +866,7 @@ phase_finalize() {
         --attempt "${ATTEMPT}" --sha "${SOURCE_SHA}" --controller-sha "${CONTROLLER_SHA}" \
         --base-image "${BASE_IMAGE}" --base-image-id "${BASE_IMAGE_ID}" \
         --shared-root "${SHARED_ROOT}" --run-key "${RUN_KEY}" \
-        --cleanup-root "${WORK_ROOT}"
+        --cleanup-root "${WORK_ROOT}" --archive-mode "${HCU_CI_ARCHIVE_MODE:-required}"
     local final_rc=$?
     set -e
     if validate_job_status_file; then rm -f -- "${JOB_STATUS_FILE}"; fi
@@ -946,15 +875,14 @@ phase_finalize() {
 
 main() {
     case "${COMMAND}" in
-        initialize|build|prepare-tests|test|finalize|storage-preflight) ;;
+        initialize|build|prepare-tests|test|finalize) ;;
         *)
-            printf 'Usage: %s {storage-preflight|initialize|build|prepare-tests|test|finalize}\n' "$0" >&2
+            printf 'Usage: %s {initialize|build|prepare-tests|test|finalize}\n' "$0" >&2
             return 2
             ;;
     esac
     resolve_context || return 2
     case "${COMMAND}" in
-        storage-preflight) phase_storage_preflight ;;
         initialize) phase_initialize ;;
         build) phase_build ;;
         prepare-tests) phase_prepare_tests ;;

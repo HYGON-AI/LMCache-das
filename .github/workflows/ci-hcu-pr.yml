@@ -13,54 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  storage-preflight:
-    name: storage-preflight-${{ matrix.job_key }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - job_key: framework
-            job_role: framework
-            model_profile: framework
-            runner_kind: nmz1
-            visible_devices: "0"
-          - job_key: qwen-localdisk
-            job_role: model
-            model_profile: pr-qwen-localdisk
-            runner_kind: nmz2
-            visible_devices: "0,1"
-          - job_key: qwen-posix
-            job_role: model
-            model_profile: pr-qwen-posix
-            runner_kind: nmz3
-            visible_devices: "0,1"
-    uses: ./.github/workflows/ci-hcu-reusable.yml
-    with:
-      controller_ref: ${{ github.event.pull_request.base.sha }}
-      source_ref: refs/pull/${{ github.event.pull_request.number }}/merge
-      logical_profile: pr
-      storage_preflight_only: true
-      model_profile: ${{ matrix.model_profile }}
-      job_role: ${{ matrix.job_role }}
-      job_key: ${{ matrix.job_key }}
-      runner_kind: ${{ matrix.runner_kind }}
-      visible_devices: ${{ matrix.visible_devices }}
-      repeat: "1"
-      timeout_minutes: 15
-      phase_timeout_seconds: "300"
-      container_memory: 56g
-      is_pr: true
-      expected_base_sha: ${{ github.event.pull_request.base.sha }}
-      expected_head_sha: ${{ github.event.pull_request.head.sha }}
-
   framework:
     name: framework-and-pytest
-    needs: storage-preflight
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
       controller_ref: ${{ github.event.pull_request.base.sha }}
       source_ref: refs/pull/${{ github.event.pull_request.number }}/merge
       logical_profile: pr
+      archive_reports: false
       model_profile: framework
       job_role: framework
       job_key: framework
@@ -94,6 +54,7 @@ jobs:
       source_ref: ${{ needs.framework.outputs.source_sha }}
       source_sha_hint: ${{ needs.framework.outputs.source_sha }}
       logical_profile: pr
+      archive_reports: false
       model_profile: ${{ matrix.model_profile }}
       job_role: model
       job_key: ${{ matrix.job_key }}
@@ -109,7 +70,7 @@ jobs:
 
   aggregate:
     name: hcu-tests
-    needs: [storage-preflight, framework, model-tests]
+    needs: [framework, model-tests]
     if: >-
       ${{
         always() &&
@@ -120,26 +81,17 @@ jobs:
     runs-on: [self-hosted, Linux, X64, ci, bw1100, nmz1]
     timeout-minutes: 10
     steps:
-      - name: Checkout trusted aggregate controller
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Validate split jobs and publish run summary
+      - name: Require successful framework and model jobs
         env:
           SOURCE_SHA: ${{ needs.framework.outputs.source_sha }}
+          FRAMEWORK_RESULT: ${{ needs.framework.result }}
+          MODEL_RESULT: ${{ needs.model-tests.result }}
         run: |
-          if [[ "${{ needs.storage-preflight.result }}" != "success" ]]; then
-            echo '::error::Infrastructure storage/mount preflight failed; no wheel/model work was started.'
-            exit 3
+          printf 'Framework: %s; Qwen LocalDisk/POSIX: %s\n' \
+            "${FRAMEWORK_RESULT}" "${MODEL_RESULT}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          if [[ "${FRAMEWORK_RESULT}" != success || "${MODEL_RESULT}" != success ]]; then
+            echo '::error::A required test job failed, was skipped, or was cancelled.'
+            exit 1
           fi
           [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          python3 ci/hcu/aggregate-jobs.py \
-            --shared-root /ci_public/lmcache-das \
-            --profile pr \
-            --run-id "${{ github.run_id }}" \
-            --attempt "${{ github.run_attempt }}" \
-            --sha "${SOURCE_SHA}" \
-            --expected-jobs framework,qwen-localdisk,qwen-posix \
-            --repository "${{ github.repository }}"
+          printf 'Source SHA: `%s`\n' "${SOURCE_SHA}" >>"${GITHUB_STEP_SUMMARY}"

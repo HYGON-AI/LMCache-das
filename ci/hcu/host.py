@@ -13,7 +13,6 @@ import re
 import shutil
 import signal
 import stat
-import subprocess
 import sys
 import tempfile
 import time
@@ -905,164 +904,19 @@ def prepare_shared_parent(shared_root, parts):
         info = os.lstat(str(current))
         if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
             raise HostError("Unsafe shared archive directory: {}".format(current))
-        # A group writer on NFS need not own directories made by another node.
         if created:
             os.chmod(str(current), 0o2770)
         if info.st_gid != root_info.st_gid or info.st_mode & 0o002:
             raise HostError("Shared directory has an unsafe group or mode: {}".format(current))
         if not os.access(str(current), os.R_OK | os.W_OK | os.X_OK):
-            raise HostError("Shared directory is not readable/writable/traversable: {}".format(current))
+            raise HostError("Shared directory is not accessible: {}".format(current))
     return current
 
 
-def checked_shared_root(value):
-    root = Path(value).absolute()
-    if str(root) != "/ci_public/lmcache-das" and os.environ.get("HCU_CI_HOST_SELFTEST") != "1":
-        raise HostError("Publication root must be exactly /ci_public/lmcache-das")
-    for path in [root] + list(root.parents):
-        if path.is_symlink():
-            raise HostError("Publication root contains a symlink: {}".format(path))
-    if not root.is_dir():
-        raise HostError("Publication root must be a real directory")
-    return root
-
-
-def publication_preflight(shared_root, profile, run_id, attempt, sha, run_key):
-    root = checked_shared_root(shared_root)
-    for value in (profile, run_id, attempt, sha, run_key):
-        ensure_token(value, "publication probe component")
-    parent = prepare_shared_parent(root, (profile, run_id, attempt, sha))
-    probe = Path(tempfile.mkdtemp(prefix=".probe-{}-".format(run_key), dir=str(parent)))
-    try:
-        first, second = probe / "write", probe / "renamed"
-        with first.open("xb") as handle:
-            handle.write(b"lmcache-publication-probe\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(str(first), str(second))
-        if second.read_bytes() != b"lmcache-publication-probe\n":
-            raise HostError("Shared storage probe read-back failed")
-        fsync_directory(probe)
-    finally:
-        shutil.rmtree(str(probe))
-    fsync_directory(parent)
-    print("Publication write/read/rename/fsync probe passed: {}".format(parent))
-
-
-def evidence_root():
-    # Fixed host-private location, outside RUNNER_TEMP and never container-mounted.
-    return Path.home() / ".lmcache-hcu-evidence"
-
-
-def private_directory(path):
-    if path.is_symlink():
-        raise HostError("Evidence directory cannot be a symlink: {}".format(path))
-    path.mkdir(mode=0o700, exist_ok=True)
-    info = os.lstat(str(path))
-    if not stat.S_ISDIR(info.st_mode):
-        raise HostError("Evidence path is not a directory")
-    if os.name != "nt" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
-        raise HostError("Evidence directory must be owned by this runner and mode 0700")
-
-
-def evidence_hashes(spool):
-    info = os.lstat(str(spool))
-    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
-        raise HostError("Evidence spool must be a real directory")
-    hashes = {}
-    for directory, names, files in os.walk(str(spool), followlinks=False):
-        for name in names + files:
-            path = Path(directory) / name
-            info = os.lstat(str(path))
-            if stat.S_ISDIR(info.st_mode):
-                continue
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise HostError("Unsafe retained evidence: {}".format(path))
-            hashes[path.relative_to(spool).as_posix()] = sha256_file(path)
-    if not hashes:
-        raise HostError("Refusing empty retained evidence")
-    return hashes
-
-
-def fsync_tree(root):
-    for directory, _names, files in os.walk(str(root), topdown=False):
-        for name in files:
-            with (Path(directory) / name).open("rb") as handle:
-                os.fsync(handle.fileno())
-        fsync_directory(Path(directory))
-
-
-def save_evidence(spool, args, primary_rc, cleanup_rc):
-    root = evidence_root()
-    private_directory(root)
-    ensure_token(args.run_key, "evidence run key")
-    final = root / args.run_key
-    if final.exists() or final.is_symlink():
-        raise HostError("Evidence already exists; use republish, not finalize again: {}".format(final))
-    temporary = Path(tempfile.mkdtemp(prefix=".snapshot-", dir=str(root)))
-    try:
-        # Reject links before copying; do not preserve ownership from containers.
-        evidence_hashes(spool)
-        copy_trusted_tree(spool, temporary / "spool")
-        receipt = {key: getattr(args, key) for key in (
-            "repository", "profile", "run_id", "attempt", "sha", "controller_sha",
-            "job_key", "job_role", "model_profile", "runner_kind", "repeat",
-            "base_image", "base_image_id", "run_key", "shared_root",
-        )}
-        receipt.update({
-            "schema_version": 1, "primary_rc": primary_rc, "cleanup_rc": cleanup_rc,
-            "baseline_sha256": sha256_file(args.baseline),
-            "model_manifest_sha256": sha256_file(args.model_manifest),
-            "files": evidence_hashes(temporary / "spool"),
-        })
-        atomic_state_json(temporary / "receipt.json", receipt)
-        fsync_tree(temporary)
-        os.replace(str(temporary), str(final))
-        fsync_directory(root)
-    except Exception:
-        if temporary.exists():
-            shutil.rmtree(str(temporary))
-        raise
-    print("Durable host evidence: {}".format(final))
-    return final
-
-
-def refresh_receipt(evidence):
-    receipt = read_json(evidence / "receipt.json")
-    receipt["files"] = evidence_hashes(evidence / "spool")
-    atomic_state_json(evidence / "receipt.json", receipt)
-
-
-def update_result_summary(spool, manifest):
-    path = spool / "summary.md"
-    lines = path.read_text(encoding="utf-8").splitlines()
-    values = {
-        "Status": manifest["status"],
-        "Primary exit code": manifest["primary_exit_code"],
-        "Execution exit code": manifest["execution_exit_code"],
-        "Validation exit code": manifest["validation_exit_code"],
-        "Cleanup exit code": manifest["cleanup_exit_code"],
-        "Publish exit code": manifest["publish_exit_code"],
-    }
-    lines = [line for line in lines if not any(line.startswith("- {}:".format(k)) for k in values)]
-    lines.extend("- {}: `{}`".format(k, value) for k, value in values.items())
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def cleanup_work_root(cleanup_root):
-    root = Path(cleanup_root)
-    runner_temp = os.environ.get("RUNNER_TEMP")
-    if not runner_temp and os.environ.get("HCU_CI_HOST_SELFTEST") != "1":
-        raise HostError("RUNNER_TEMP is required for safely scoped cleanup")
-    allowed = Path(runner_temp or tempfile.gettempdir()).resolve() / "lmcache-hcu"
-    if root.is_symlink() or not is_within(root, allowed) or root.resolve() == allowed:
-        raise HostError("Refusing unsafe cleanup root: {}".format(root))
-    if root.exists():
-        shutil.rmtree(str(root))
-
-
 def publish(spool, shared_root, profile, run_id, attempt, sha, job_key, run_key, cleanup_root):
-    shared_root = checked_shared_root(shared_root)
+    shared_root = Path(shared_root).resolve()
+    if str(shared_root) != "/ci_public/lmcache-das" and os.environ.get("HCU_CI_HOST_SELFTEST") != "1":
+        raise HostError("Publication root must be exactly /ci_public/lmcache-das")
     for value, label in (
         (profile, "profile"),
         (run_id, "run id"),
@@ -1079,17 +933,6 @@ def publish(spool, shared_root, profile, run_id, attempt, sha, job_key, run_key,
     staging = parent / (".staging-" + run_key)
     if not is_within(final, shared_root) or not is_within(staging, shared_root):
         raise HostError("Publication path escaped the shared root")
-    if final.exists() and (final / "READY").is_file():
-        # An interrupted client may have missed a completed publication. Never
-        # overwrite it; accept only a byte-identical, checksum-verified result.
-        expected = evidence_hashes(spool)
-        actual = evidence_hashes(final)
-        actual.pop("SHA256SUMS", None)
-        actual.pop("READY", None)
-        if actual != expected:
-            raise HostError("Existing completed archive differs from retained evidence")
-        verify_checksums(final)
-        return final
     if final.exists() or staging.exists():
         raise HostError("Publication destination already exists: {}".format(final))
     staging.mkdir(mode=0o2750)
@@ -1097,12 +940,20 @@ def publish(spool, shared_root, profile, run_id, attempt, sha, job_key, run_key,
     try:
         copy_trusted_tree(spool, staging)
         write_checksums(staging)
-        fsync_tree(staging)
 
+        cleanup_root = Path(cleanup_root).resolve()
+        runner_temp = os.environ.get("RUNNER_TEMP")
+        if not runner_temp and os.environ.get("HCU_CI_HOST_SELFTEST") != "1":
+            raise HostError("RUNNER_TEMP is required for safely scoped cleanup")
+        allowed_parent = Path(runner_temp or tempfile.gettempdir()).resolve() / "lmcache-hcu"
+        if not is_within(cleanup_root, allowed_parent) or cleanup_root == allowed_parent:
+            raise HostError("Refusing unsafe cleanup root: {}".format(cleanup_root))
         os.replace(str(staging), str(final))
         fsync_directory(parent)
-        # Cleanup is handled against the disposable workspace only, after a
-        # durable evidence snapshot exists. Publication never deletes its input.
+        try:
+            shutil.rmtree(str(cleanup_root))
+        except Exception as exc:
+            raise HostError("workspace cleanup failed: {}".format(exc))
         ready_tmp = final / "READY.tmp"
         with ready_tmp.open("x", encoding="utf-8") as handle:
             handle.write("complete\n")
@@ -1141,6 +992,34 @@ def cmd_capture_log(args):
         file=sys.stderr,
     )
     return 0
+
+
+def publish_wheel_bundle(spool, args, manifest):
+    """Share only the tested wheel; report retention is not a dependency."""
+    wheels = sorted((spool / "wheels").glob("*.whl"))
+    if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
+        raise HostError("Framework must export exactly one regular wheel")
+    with tempfile.TemporaryDirectory(prefix="wheel-bundle-", dir=args.cleanup_root) as temporary:
+        bundle = Path(temporary)
+        (bundle / "wheels").mkdir()
+        shutil.copyfile(str(wheels[0]), str(bundle / "wheels" / wheels[0].name))
+        receipt = dict(manifest, profile="wheels", test_profile=args.profile,
+                       wheel_file=wheels[0].name, wheel_sha256=sha256_file(wheels[0]))
+        atomic_json(bundle / "manifest.json", receipt)
+        final = publish(bundle, args.shared_root, "wheels", args.run_id, args.attempt,
+                        args.sha, "framework", args.run_key + "-wheel", str(bundle))
+    print("Published current-SHA wheel bundle: {}".format(final))
+
+
+def cleanup_disposable_workspace(value):
+    root = Path(value)
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if not runner_temp:
+        raise HostError("RUNNER_TEMP is required for scoped workspace cleanup")
+    allowed = Path(runner_temp).resolve() / "lmcache-hcu"
+    if root.is_symlink() or not is_within(root, allowed) or root.resolve() == allowed:
+        raise HostError("Refusing unsafe workspace cleanup: {}".format(root))
+    shutil.rmtree(str(root))
 
 
 def cmd_finalize(args):
@@ -1216,32 +1095,35 @@ def cmd_finalize(args):
         "primary_exit_code": primary_rc,
         "execution_exit_code": args.primary_rc,
         "validation_exit_code": 9 if problems else 0,
+        "wheel_transfer_exit_code": 0,
         "cleanup_exit_code": args.cleanup_rc,
         "publish_exit_code": 0,
         "status": status,
     }
     atomic_json(spool / "manifest.json", manifest)
-    update_result_summary(spool, manifest)
-    # The runner may remove RUNNER_TEMP even on failure. Snapshot before any
-    # publication attempt or workspace removal, into a host-private location.
-    evidence = save_evidence(spool, args, primary_rc, args.cleanup_rc)
-    spool = evidence / "spool"
-    try:
-        cleanup_work_root(args.cleanup_root)
-    except Exception as exc:
-        manifest["cleanup_exit_code"] = 10
-        manifest["primary_exit_code"] = primary_rc = primary_rc or 10
-        manifest["status"] = "failed"
-        write_synthetic(spool / "reports" / "synthetic-workspace-cleanup.xml",
-                        "workspace-cleanup", str(exc))
-        with (spool / "summary.md").open("a", encoding="utf-8") as handle:
-            handle.write("\n- Workspace cleanup failed: {}\n".format(exc))
-        atomic_json(spool / "manifest.json", manifest)
-        update_result_summary(spool, manifest)
-        receipt = read_json(evidence / "receipt.json")
-        receipt.update(primary_rc=primary_rc, cleanup_rc=10)
-        atomic_state_json(evidence / "receipt.json", receipt)
-    refresh_receipt(evidence)
+    if primary_rc == 0 and args.job_role == "framework":
+        try:
+            publish_wheel_bundle(spool, args, manifest)
+        except Exception as exc:
+            primary_rc = 12
+            manifest.update(primary_exit_code=12, wheel_transfer_exit_code=12, status="failed")
+            atomic_json(spool / "manifest.json", manifest)
+            summary = [line.replace("Status: `passed`", "Status: `failed`")
+                       .replace("Primary exit code: `0`", "Primary exit code: `12`") for line in summary]
+            summary.append("- Required wheel transfer failed: {}".format(exc))
+            (spool / "summary.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+            print("Required wheel transfer failed: {}".format(exc), file=sys.stderr)
+    if getattr(args, "archive_mode", "required") == "off":
+        # JUnit/inventory/model validation above remains mandatory. Only the
+        # optional, long-lived log/report copy is disabled for ordinary PRs.
+        print((spool / "summary.md").read_text(encoding="utf-8"))
+        try:
+            cleanup_disposable_workspace(args.cleanup_root)
+        except Exception as exc:
+            print("Workspace cleanup failed: {}".format(exc), file=sys.stderr)
+            primary_rc = primary_rc or 10
+        print("Final job exit code: {}. Shared report archiving is disabled.".format(primary_rc))
+        return primary_rc
     try:
         final = publish(
             spool,
@@ -1259,8 +1141,6 @@ def cmd_finalize(args):
         manifest["status"] = "failed"
         if spool.exists():
             atomic_json(spool / "manifest.json", manifest)
-            update_result_summary(spool, manifest)
-            refresh_receipt(evidence)
         print(
             "Publication failed; trusted spool or staging retained for diagnosis: {}".format(exc),
             file=sys.stderr,
@@ -1268,83 +1148,6 @@ def cmd_finalize(args):
         return 11 if primary_rc == 0 else primary_rc
     print("Published CI results to {}".format(final))
     return primary_rc
-
-
-def verify_checksums(root):
-    sums = root / "SHA256SUMS"
-    if sums.is_symlink() or not sums.is_file():
-        raise HostError("Missing archive checksums")
-    actual = evidence_hashes(root)
-    expected = {}
-    for line in sums.read_text(encoding="utf-8").splitlines():
-        digest, relative = line.split("  ", 1)
-        if relative in expected or not re.match(r"^[0-9a-f]{64}$", digest):
-            raise HostError("Invalid archive checksums")
-        expected[relative] = digest
-    actual.pop("SHA256SUMS", None)
-    actual.pop("READY", None)
-    if expected != actual:
-        raise HostError("Archive checksum inventory differs")
-
-
-def cmd_republish(args):
-    root = evidence_root()
-    private_directory(root)
-    evidence = Path(args.evidence).absolute()
-    if evidence.parent != root or evidence.is_symlink():
-        raise HostError("Recovery must use a direct child of this runner's evidence root")
-    private_directory(evidence)
-    receipt_path = evidence / "receipt.json"
-    info = os.lstat(str(receipt_path))
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
-            (os.name != "nt" and (info.st_uid != os.getuid() or info.st_mode & 0o077))):
-        raise HostError("Unsafe recovery receipt")
-    receipt = read_json(receipt_path)
-    spool = evidence / "spool"
-    if receipt.get("schema_version") != 1 or evidence_hashes(spool) != receipt.get("files"):
-        raise HostError("Retained evidence hashes differ")
-    if receipt["sha"] != args.sha or receipt["controller_sha"] != args.controller_sha:
-        raise HostError("Recovery source/controller SHA differs from the receipt")
-    actual_controller = subprocess.check_output(
-        ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"],
-        universal_newlines=True,
-    ).strip()
-    if actual_controller != args.controller_sha:
-        raise HostError("Run republish from the original trusted controller checkout")
-    if (sha256_file(args.baseline) != receipt["baseline_sha256"] or
-            sha256_file(args.model_manifest) != receipt["model_manifest_sha256"]):
-        raise HostError("Recovery baseline/model manifest differs")
-    primary_rc = receipt["primary_rc"]
-    if primary_rc == 0:
-        problems, _ = validate_success(
-            spool, args.baseline, receipt["repeat"], args.model_manifest,
-            receipt["model_profile"], receipt["runner_kind"], receipt["job_role"],
-        )
-        if problems:
-            raise HostError("Recovery validation failed: {}".format("; ".join(problems)))
-    manifest = read_json(spool / "manifest.json")
-    for key, receipt_key in (("source_sha", "sha"), ("controller_sha", "controller_sha"),
-                             ("run_id", "run_id"), ("attempt", "attempt"),
-                             ("job_key", "job_key"), ("repository", "repository")):
-        if manifest.get(key) != receipt[receipt_key]:
-            raise HostError("Recovery manifest identity differs: {}".format(key))
-    manifest["publish_exit_code"] = 0
-    manifest["status"] = "passed" if primary_rc == 0 and receipt["cleanup_rc"] == 0 else "failed"
-    atomic_json(spool / "manifest.json", manifest)
-    update_result_summary(spool, manifest)
-    refresh_receipt(evidence)
-    try:
-        final = publish(spool, receipt["shared_root"], receipt["profile"], receipt["run_id"],
-                        receipt["attempt"], receipt["sha"], receipt["job_key"],
-                        receipt["run_key"], None)
-    except Exception:
-        manifest.update(publish_exit_code=11, status="failed")
-        atomic_json(spool / "manifest.json", manifest)
-        update_result_summary(spool, manifest)
-        refresh_receipt(evidence)
-        raise
-    print("Republished retained reports without build/model execution: {}".format(final))
-    return primary_rc or receipt["cleanup_rc"]
 
 
 def cmd_selftest(_args):
@@ -1540,18 +1343,8 @@ def parser():
     final.add_argument("--shared-root", required=True)
     final.add_argument("--run-key", required=True)
     final.add_argument("--cleanup-root", required=True)
+    final.add_argument("--archive-mode", choices=("required", "off"), default="required")
     final.set_defaults(func=cmd_finalize)
-
-    probe = commands.add_parser("publication-preflight")
-    for name in ("shared-root", "profile", "run-id", "attempt", "sha", "run-key"):
-        probe.add_argument("--" + name, required=True)
-    probe.set_defaults(func=lambda args: publication_preflight(
-        args.shared_root, args.profile, args.run_id, args.attempt, args.sha, args.run_key) or 0)
-
-    recovery = commands.add_parser("republish")
-    for name in ("evidence", "sha", "controller-sha", "baseline", "model-manifest"):
-        recovery.add_argument("--" + name, required=True)
-    recovery.set_defaults(func=cmd_republish)
 
     selftest = commands.add_parser("selftest")
     selftest.set_defaults(func=cmd_selftest)

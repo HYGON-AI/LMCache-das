@@ -3,11 +3,11 @@ name: LMCache HCU reusable job
 on:
   workflow_call:
     inputs:
-      storage_preflight_only:
-        description: Device-less publication and mount capability probe only
+      archive_reports:
+        description: Require shared report archives (PR tests use Actions results instead)
         required: false
         type: boolean
-        default: false
+        default: true
       controller_ref:
         required: true
         type: string
@@ -100,15 +100,7 @@ jobs:
       HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e
       HCU_CI_VISIBLE_DEVICES: ${{ inputs.visible_devices }}
       HCU_CI_RUNNER_LOCK: ${{ format('/tmp/hcu-ci-gpu-locks/{0}-organization-hcu.lock', inputs.runner_kind) }}
-      HCU_CI_CACHE_ROOT: >-
-        ${{
-          inputs.runner_kind == 'nmz1' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ1 ||
-          inputs.runner_kind == 'nmz2' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ2 ||
-          inputs.runner_kind == 'nmz3' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ3 ||
-          inputs.runner_kind == 'nmz4' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 ||
-          inputs.runner_kind == 'nmz5' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ5 ||
-          ''
-        }}
+      HCU_CI_ARCHIVE_MODE: ${{ inputs.archive_reports && 'required' || 'off' }}
       HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
       HCU_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
       HCU_CI_EXPECTED_BASE_SHA: ${{ inputs.expected_base_sha }}
@@ -150,15 +142,11 @@ jobs:
             "${HCU_CI_JOB_KEY}" >>"${GITHUB_ENV}"
 
       - name: Preflight and initialize
-        if: ${{ !cancelled() && !inputs.storage_preflight_only }}
+        if: ${{ !cancelled() }}
         run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" initialize
 
-      - name: Probe publication and configured mounts without GPU
-        if: ${{ !cancelled() && inputs.storage_preflight_only }}
-        run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" storage-preflight
-
       - name: Build or install and verify current wheel
-        if: ${{ always() && !cancelled() && !inputs.storage_preflight_only }}
+        if: ${{ always() && !cancelled() }}
         run: |
           if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
              [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
@@ -168,7 +156,7 @@ jobs:
           bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" build
 
       - name: Apply repository patches and prepare selected tests
-        if: ${{ always() && !cancelled() && !inputs.storage_preflight_only }}
+        if: ${{ always() && !cancelled() }}
         run: |
           if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
              [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
@@ -178,7 +166,7 @@ jobs:
           bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" prepare-tests
 
       - name: Run selected test scope
-        if: ${{ always() && !cancelled() && !inputs.storage_preflight_only }}
+        if: ${{ always() && !cancelled() }}
         run: |
           if [[ ! -f "${HCU_CI_JOB_STATUS_FILE}" ]] ||
              [[ "$(<"${HCU_CI_JOB_STATUS_FILE}")" != "passed" ]]; then
@@ -188,5 +176,5 @@ jobs:
           bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" test
 
       - name: Cleanup, validate and publish job result
-        if: ${{ always() && !inputs.storage_preflight_only }}
+        if: always()
         run: bash "${HCU_CI_CONTROLLER}/ci/hcu/run.sh" finalize
