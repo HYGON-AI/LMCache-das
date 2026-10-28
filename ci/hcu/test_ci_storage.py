@@ -121,16 +121,13 @@ verify_prebuilt_wheel
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(result.returncode, 0 if mode == "valid" else 3, result.stderr)
 
-    def test_cache_is_runner_owned_and_ignores_stale_shared_cache_variable(self):
+    def test_cache_lifecycle_uses_volume_helper_not_runner_temp(self):
         shell = (ROOT / "run.sh").read_text().rsplit("\nmain", 1)[0]
         script = shell + r'''
-CACHE_RUN_ROOT="${CACHE_ROOT}/unique-test-run"
-dd() { return 0; }
+RUN_KEY=unique-test-run
+python3() { printf '%s\n' "$*"; }
 validate_cache_root
-[[ "$CACHE_RUN_ROOT" == "$RUNNER_TEMP/lmcache-hcu-cache/unique-test-run" ]]
-[[ -d "$CACHE_RUN_ROOT/posix" && -d "$CACHE_RUN_ROOT/localdisk" ]]
 cleanup_cache_run
-[[ ! -e "$CACHE_RUN_ROOT" ]]
 '''
         env = dict(os.environ, HCU_CI_CONTROLLER=str(ROOT.parents[1]),
                    HCU_CI_CHECKOUT=str(ROOT.parents[1]), HCU_CI_JOB_ROLE="model",
@@ -138,6 +135,12 @@ cleanup_cache_run
         result = subprocess.run(["bash"], input=script, universal_newlines=True, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cache-volumes.py prepare --run-key unique-test-run", result.stdout)
+        self.assertIn("cache-volumes.py cleanup --run-key unique-test-run", result.stdout)
+        self.assertNotIn("lmcache-hcu-cache/", shell)
+        self.assertLess(shell.index('docker image inspect --format'),
+                        shell.index('    validate_cache_root || return 3'))
+        self.assertIn('cache-cleanup.log\" 2>&1 || cleanup_rc=10', shell)
 
     def test_aggregate_requires_success_and_not_archive_files(self):
         workflow = (ROOT.parents[1] / ".github/workflows/ci-hcu-pr.yml").read_text()

@@ -85,6 +85,7 @@ fi
 # Exercise their full regressions on Python 3.6 as well as newer interpreters.
 python3 "${SCRIPT_DIR}/test_ci_host_disabled.py"
 python3 "${SCRIPT_DIR}/test_ci_storage.py"
+python3 "${SCRIPT_DIR}/test_ci_cache_volumes.py"
 python3 "${SCRIPT_DIR}/test_ci_wheel_lifecycle.py"
 
 if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then

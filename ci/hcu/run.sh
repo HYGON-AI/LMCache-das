@@ -27,7 +27,7 @@ readonly DEPENDENCY_ASSET="/ci_public/lmcache-das/assets/dependencies/v0.4.2-cp3
 readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
 readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock}"
 readonly RUNNER_TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
-readonly CACHE_ROOT="${RUNNER_TEMP_ROOT}/lmcache-hcu-cache"
+readonly CACHE_HELPER="${CONTROLLER_ROOT}/ci/hcu/cache-volumes.py"
 readonly CONTAINER_MEMORY="${HCU_CI_CONTAINER_MEMORY:-56g}"
 readonly CONTAINER_CPUS="${HCU_CI_CONTAINER_CPUS:-32}"
 readonly OUTPUT_LIMIT="${HCU_CI_OUTPUT_LIMIT:-3g}"
@@ -49,7 +49,7 @@ CONTAINER_NAME=""
 LEASE_CONTAINER=""
 NETWORK_NAME=""
 TEST_TOOL_ROOT=""
-CACHE_RUN_ROOT=""
+CACHE_VOLUME_PREFIX=""
 PREBUILT_WHEEL_ROOT=""
 SOURCE_STATUS=""
 SOURCE_STATUS_SHA256=""
@@ -126,9 +126,7 @@ resolve_context() {
     if [[ "${JOB_ROLE}" == "model" ]]; then
         PREBUILT_WHEEL_ROOT="${SHARED_ROOT}/wheels/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework/wheels"
     fi
-    if [[ -n "${CACHE_ROOT}" ]]; then
-        CACHE_RUN_ROOT="${CACHE_ROOT}/${RUN_KEY}"
-    fi
+    CACHE_VOLUME_PREFIX="lmcache-hcu-cache-${RUN_KEY}"
 }
 
 state_metadata_args() {
@@ -280,30 +278,7 @@ visible_device_count() {
 
 validate_cache_root() {
     model_tests_required || return 0
-    # Runner-owned scratch is already allowed by the organization wrapper.
-    # Never mount the shared report tree as a writable test cache.
-    [[ -d "${RUNNER_TEMP_ROOT}" && ! -L "${RUNNER_TEMP_ROOT}" ]] || return 3
-    ensure_within "${CACHE_ROOT}" "${RUNNER_TEMP_ROOT}" || return 3
-    [[ ! -L "${CACHE_ROOT}" ]] || return 3
-    mkdir -p "${CACHE_ROOT}" || return 3
-    [[ "$(readlink -e -- "${CACHE_ROOT}")" == "${CACHE_ROOT}" ]] || return 3
-    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}" || return 3
-    [[ ! -e "${CACHE_RUN_ROOT}" && ! -L "${CACHE_RUN_ROOT}" ]] || return 3
-    mkdir -- "${CACHE_RUN_ROOT}" || return 3
-    mkdir -p "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
-        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix" || return 3
-    # Docker user-namespace remapping means container root is not the host
-    # runner user. These run-scoped, non-secret cache mounts must be writable
-    # by that remapped identity; the parent remains private and the complete
-    # run directory is removed during finalization.
-    chmod 0777 "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
-        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix" || return 3
-    local directory probe
-    for directory in cpu localdisk ssd posix; do
-        probe="${CACHE_RUN_ROOT}/${directory}/.direct-io-probe"
-        dd if=/dev/zero of="${probe}" bs=4096 count=1 oflag=direct status=none || return 3
-        rm -f -- "${probe}" || return 3
-    done
+    python3 "${CACHE_HELPER}" prepare --run-key "${RUN_KEY}" --image "${BASE_IMAGE}"
 }
 
 model_mount_arguments() {
@@ -382,7 +357,6 @@ host_preflight() {
     python3 "${MODEL_HELPER}" validate --manifest "${MODEL_MANIFEST}" \
         --profile "${MODEL_PROFILE}" --runner "${RUNNER_KIND}" \
         --visible-devices "${VISIBLE_DEVICES}" >/dev/null
-    validate_cache_root || return 3
     model_mount_arguments >/dev/null || return 3
     verify_prebuilt_wheel || return 3
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
@@ -398,6 +372,9 @@ host_preflight() {
             "${BASE_IMAGE}" | grep -Fxq "${BASE_IMAGE}" || return 3
     fi
     [[ -d "${DEPENDENCY_ASSET}" && ! -L "${DEPENDENCY_ASSET}" ]] || return 3
+    # Probe with the verified image before taking the GPU lease. Named volumes
+    # live on Docker's /data disk, never in the root-backed runner temp tree.
+    validate_cache_root || return 3
 }
 
 validate_configuration() {
@@ -469,14 +446,17 @@ start_test_container() {
     while IFS= read -r -d '' value; do resource_args+=("${value}"); done < <(device_and_group_arguments)
     while IFS= read -r -d '' value; do model_args+=("${value}"); done < <(model_mount_arguments)
     if model_tests_required; then
-        [[ -d "${TEST_TOOL_ROOT}/.git" && -d "${CACHE_RUN_ROOT}" ]]
+        [[ -d "${TEST_TOOL_ROOT}/.git" ]] || return 3
+        python3 "${CACHE_HELPER}" verify --run-key "${RUN_KEY}" || return 3
         network_name="${NETWORK_NAME}"
+        optional_mounts+=(
+            -v "${CACHE_VOLUME_PREFIX}-cpu:/mnt/fs1:rw,nocopy"
+            -v "${CACHE_VOLUME_PREFIX}-localdisk:/local_disk:rw,nocopy"
+            -v "${CACHE_VOLUME_PREFIX}-ssd:/ssd:rw,nocopy"
+            -v "${CACHE_VOLUME_PREFIX}-posix:/mnt/parastor_storage:rw,nocopy"
+        )
         while IFS= read -r -d '' value; do optional_mounts+=("${value}"); done < <(
             bind_mount_arguments "${TEST_TOOL_ROOT}" /input/test-tool ro
-            bind_mount_arguments "${CACHE_RUN_ROOT}/cpu" /mnt/fs1 rw
-            bind_mount_arguments "${CACHE_RUN_ROOT}/localdisk" /local_disk rw
-            bind_mount_arguments "${CACHE_RUN_ROOT}/ssd" /ssd rw
-            bind_mount_arguments "${CACHE_RUN_ROOT}/posix" /mnt/parastor_storage rw
             bind_mount_arguments "${PREBUILT_WHEEL_ROOT}" /input/prebuilt-wheel ro
         )
     fi
@@ -674,13 +654,8 @@ cleanup_internal_network() {
 }
 
 cleanup_cache_run() {
-    [[ -n "${CACHE_RUN_ROOT}" ]] || return 0
-    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}" || return 1
-    [[ ! -L "${CACHE_RUN_ROOT}" ]] || return 1
-    if [[ -e "${CACHE_RUN_ROOT}" ]]; then
-        rm -rf -- "${CACHE_RUN_ROOT}"
-    fi
-    [[ ! -e "${CACHE_RUN_ROOT}" ]]
+    model_tests_required || return 0
+    python3 "${CACHE_HELPER}" cleanup --run-key "${RUN_KEY}"
 }
 
 phase_initialize() {

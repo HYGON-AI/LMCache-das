@@ -265,20 +265,29 @@ The fixed upstream source is read from:
 /ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e/
 ```
 
-Cache roots need no repository variables or administrator provisioning. CI uses
-`$RUNNER_TEMP/lmcache-hcu-cache/<run-key>` in the existing runner-owned mount
-allowlist; old `LMCACHE_HCU_CACHE_ROOT_NMZ*` values are no longer used. No sudo,
-Docker policy change, symlink trick or broader mount permission is needed.
+Model caches use four run-scoped Docker local volumes under the existing
+DockerRootDir on `/data` (currently `/data/docker/volumes/`), not root-backed
+`$RUNNER_TEMP`. Old `LMCACHE_HCU_CACHE_ROOT_NMZ*` values are not used. No sudo,
+Docker policy change, direct `/data` bind or administrator provisioning is needed.
 This is disposable local scratch, not a shared-storage performance test.
 The pinned Qwen POSIX config still uses `/local_disk/posix_cache`, O_DIRECT and
 the same POSIX backend; model paths, options and workloads do not change.
 
-Each run creates only one cache subtree below its runner's temporary directory. The
-controller probes CPU, LocalDisk, SSD and POSIX subdirectories with direct I/O,
-mounts them as `/mnt/fs1`, `/local_disk`, `/ssd` and
-`/mnt/parastor_storage`, and removes only the current run subtree after the
-test container is confirmed absent. The CPU mount preserves the fixed test
-tool's `/mnt/fs1/posix` behavior without making the container root writable.
+Volumes are named `lmcache-hcu-cache-<run-key>-<cpu|localdisk|ssd|posix>` and
+mounted as `/mnt/fs1`, `/local_disk`, `/ssd` and `/mnt/parastor_storage` with
+`nocopy`. Before acquiring GPUs, a bounded, device-less probe in the pinned
+image checks that all four mounts are on the host's separate `/data` filesystem,
+have at least 300 GiB free, and support a 4 KiB O_DIRECT write. This floor leaves
+headroom over the observed ~226 GiB Qwen cache; it is not a reserved quota or a
+promise that concurrent users cannot consume disk space later. Workloads and
+test assertions are unchanged. A failed check stops model startup explicitly.
+
+Finalization removes only these exact volumes with matching repository/run
+labels, after the test container is confirmed absent. It never prunes volumes
+or deletes old runner directories; an in-use volume or Docker error fails cleanup.
+Reports remain in their existing output/spool paths and do not live in cache
+volumes. The CPU mount preserves the fixed test tool's `/mnt/fs1/posix` behavior
+without making the container root writable.
 
 The Qwen CPU config in the fixed test-tool archive contains one duplicate
 `disable-cascade-attn` entry. The manifest authorizes removal of only that
