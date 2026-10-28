@@ -1000,7 +1000,11 @@ def publish_wheel_bundle(spool, args, manifest):
     if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
         raise HostError("Framework must export exactly one regular wheel")
     with tempfile.TemporaryDirectory(prefix="wheel-bundle-", dir=args.cleanup_root) as temporary:
-        bundle = Path(temporary)
+        # publish() consumes its cleanup_root. Keep that separate from the
+        # context-owned directory: Python 3.6 raises if __exit__ removes a root
+        # that publish() already removed (newer Python silently tolerates it).
+        bundle = Path(temporary) / "bundle"
+        bundle.mkdir()
         (bundle / "wheels").mkdir()
         shutil.copyfile(str(wheels[0]), str(bundle / "wheels" / wheels[0].name))
         receipt = dict(manifest, profile="wheels", test_profile=args.profile,

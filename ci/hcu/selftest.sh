@@ -81,6 +81,12 @@ if python3 "${SCRIPT_DIR}/host.py" state-require \
     exit 1
 fi
 
+# These helpers run on the runner host, not in the reviewed test image.
+# Exercise their full regressions on Python 3.6 as well as newer interpreters.
+python3 "${SCRIPT_DIR}/test_ci_host_disabled.py"
+python3 "${SCRIPT_DIR}/test_ci_storage.py"
+python3 "${SCRIPT_DIR}/test_ci_wheel_lifecycle.py"
+
 if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
     python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
         "${SCRIPT_DIR}/ci.py" "${SELFTEST_CACHE}/ci.pyc"
@@ -88,8 +94,6 @@ if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) els
     python3 "${SCRIPT_DIR}/test_ci_042.py"
     python3 "${SCRIPT_DIR}/test_ci_patch_cli.py"
     python3 "${SCRIPT_DIR}/test_ci_disabled.py"
-    python3 "${SCRIPT_DIR}/test_ci_host_disabled.py"
-    python3 "${SCRIPT_DIR}/test_ci_storage.py"
 else
     printf '%s\n' \
         'Host Python is older than 3.10; ci.py syntax/helper checks must run in the reviewed test image.'
