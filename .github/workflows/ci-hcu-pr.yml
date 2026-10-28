@@ -20,6 +20,7 @@ jobs:
       controller_ref: ${{ github.event.pull_request.base.sha }}
       source_ref: refs/pull/${{ github.event.pull_request.number }}/merge
       logical_profile: pr
+      archive_reports: false
       model_profile: framework
       job_role: framework
       job_key: framework
@@ -53,6 +54,7 @@ jobs:
       source_ref: ${{ needs.framework.outputs.source_sha }}
       source_sha_hint: ${{ needs.framework.outputs.source_sha }}
       logical_profile: pr
+      archive_reports: false
       model_profile: ${{ matrix.model_profile }}
       job_role: model
       job_key: ${{ matrix.job_key }}
@@ -72,28 +74,24 @@ jobs:
     if: >-
       ${{
         always() &&
+        !cancelled() &&
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
     runs-on: [self-hosted, Linux, X64, ci, bw1100, nmz1]
     timeout-minutes: 10
     steps:
-      - name: Checkout trusted aggregate controller
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Validate split jobs and publish run summary
+      - name: Require successful framework and model jobs
         env:
           SOURCE_SHA: ${{ needs.framework.outputs.source_sha }}
+          FRAMEWORK_RESULT: ${{ needs.framework.result }}
+          MODEL_RESULT: ${{ needs.model-tests.result }}
         run: |
+          printf 'Framework: %s; Qwen LocalDisk/POSIX: %s\n' \
+            "${FRAMEWORK_RESULT}" "${MODEL_RESULT}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          if [[ "${FRAMEWORK_RESULT}" != success || "${MODEL_RESULT}" != success ]]; then
+            echo '::error::A required test job failed, was skipped, or was cancelled.'
+            exit 1
+          fi
           [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          python3 ci/hcu/aggregate-jobs.py \
-            --shared-root /ci_public/lmcache-das \
-            --profile pr \
-            --run-id "${{ github.run_id }}" \
-            --attempt "${{ github.run_attempt }}" \
-            --sha "${SOURCE_SHA}" \
-            --expected-jobs framework,qwen-localdisk,qwen-posix \
-            --repository "${{ github.repository }}"
+          printf 'Source SHA: `%s`\n' "${SOURCE_SHA}" >>"${GITHUB_STEP_SUMMARY}"

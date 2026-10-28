@@ -154,6 +154,8 @@ container, rejects links, special files, unexpected paths and oversized output,
 then imports regular files into a trusted spool. The host independently checks
 pytest inventory/JUnit, model inventory/JUnit, structured test-tool results,
 patch cleanup and checksums before publishing `READY` last.
+For ordinary PRs, the same result checks run before disposable output is
+removed, but shared report publication is disabled as described below.
 
 ## Runner and profiles
 
@@ -203,11 +205,6 @@ Required repository variables:
 ```text
 LMCACHE_HCU_BASE_IMAGE=<reviewed image tag or registry digest>
 LMCACHE_HCU_BASE_IMAGE_ID=sha256:<immutable local image ID>
-LMCACHE_HCU_CACHE_ROOT_NMZ1=<dedicated path containing /lmcache-das/>
-LMCACHE_HCU_CACHE_ROOT_NMZ2=<dedicated path containing /lmcache-das/>
-LMCACHE_HCU_CACHE_ROOT_NMZ3=<dedicated path containing /lmcache-das/>
-LMCACHE_HCU_CACHE_ROOT_NMZ4=<dedicated path containing /lmcache-das/>
-LMCACHE_HCU_CACHE_ROOT_NMZ5=<dedicated path containing /lmcache-das/>
 LMCACHE_HCU_ARCH=<optional expected architecture reported by the image>
 ```
 
@@ -268,7 +265,15 @@ The fixed upstream source is read from:
 /ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e/
 ```
 
-Each run creates only one cache subtree below its selected runner's cache root. The
+Cache roots need no repository variables or administrator provisioning. CI uses
+`$RUNNER_TEMP/lmcache-hcu-cache/<run-key>` in the existing runner-owned mount
+allowlist; old `LMCACHE_HCU_CACHE_ROOT_NMZ*` values are no longer used. No sudo,
+Docker policy change, symlink trick or broader mount permission is needed.
+This is disposable local scratch, not a shared-storage performance test.
+The pinned Qwen POSIX config still uses `/local_disk/posix_cache`, O_DIRECT and
+the same POSIX backend; model paths, options and workloads do not change.
+
+Each run creates only one cache subtree below its runner's temporary directory. The
 controller probes CPU, LocalDisk, SSD and POSIX subdirectories with direct I/O,
 mounts them as `/mnt/fs1`, `/local_disk`, `/ssd` and
 `/mnt/parastor_storage`, and removes only the current run subtree after the
@@ -318,7 +323,34 @@ tool-level `result=success` cannot hide partial responses such as 20/50 or 19/50
 
 ## Reports
 
-Results are atomically published under:
+Ordinary PRs do not require long-lived report archives. Pytest inventory/JUnit,
+model JSON/JUnit, original patch-CLI exits and resource cleanup are still checked
+strictly on the host. Missing or failed results fail the job. The required
+`hcu-tests` summary consumes actual Actions framework/model job results and
+rejects failure, cancellation or skipped jobs; it does not depend on NFS log
+copies or archive `READY` markers. Logs remain visible in Actions; temporary
+reports are removed after validation. There is no durable-evidence service,
+republish command or three-node preflight matrix to configure.
+
+Only the current-SHA wheel is a required shared build artifact:
+
+```text
+/ci_public/lmcache-das/wheels/<run-id>/<attempt>/<source-sha>/framework/
+  wheels/<one-current-wheel>.whl
+  manifest.json
+  SHA256SUMS
+  READY
+```
+
+It contains no pytest or model logs. Models verify the source/controller SHA,
+run/attempt, manifest and checksums, then stage only that wheel into runner-local
+read-only input. A missing/corrupt wheel remains a real transfer failure; CI
+does not rebuild independently on model nodes or reuse another source's wheel.
+Existing group-writable shared parents are checked, not chmodded/chowned by
+non-owner runner UIDs; permissions are set only on newly created parents.
+
+Manual/weekly workflows retain their existing required archival mode; this
+change does not schedule or expand them. Their results are atomically published under:
 
 ```text
 /ci_public/lmcache-das/<pr|manual|weekly>/<run-id>/<attempt>/<sha>/

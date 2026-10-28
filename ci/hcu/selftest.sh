@@ -89,6 +89,7 @@ if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) els
     python3 "${SCRIPT_DIR}/test_ci_patch_cli.py"
     python3 "${SCRIPT_DIR}/test_ci_disabled.py"
     python3 "${SCRIPT_DIR}/test_ci_host_disabled.py"
+    python3 "${SCRIPT_DIR}/test_ci_storage.py"
 else
     printf '%s\n' \
         'Host Python is older than 3.10; ci.py syntax/helper checks must run in the reviewed test image.'

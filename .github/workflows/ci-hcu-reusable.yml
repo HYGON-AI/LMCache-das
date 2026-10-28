@@ -3,6 +3,11 @@ name: LMCache HCU reusable job
 on:
   workflow_call:
     inputs:
+      archive_reports:
+        description: Require shared report archives (PR tests use Actions results instead)
+        required: false
+        type: boolean
+        default: true
       controller_ref:
         required: true
         type: string
@@ -67,7 +72,7 @@ jobs:
     name: ${{ inputs.job_key }}
     if: >-
       ${{
-        always() &&
+        !cancelled() &&
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
@@ -95,15 +100,7 @@ jobs:
       HCU_CI_UPSTREAM_SOURCE: /ci_public/lmcache-das/assets/upstream/LMCache/v0.4.2/9d413181c30ec2ec97bcb6b17defa7c5f9f8e36e
       HCU_CI_VISIBLE_DEVICES: ${{ inputs.visible_devices }}
       HCU_CI_RUNNER_LOCK: ${{ format('/tmp/hcu-ci-gpu-locks/{0}-organization-hcu.lock', inputs.runner_kind) }}
-      HCU_CI_CACHE_ROOT: >-
-        ${{
-          inputs.runner_kind == 'nmz1' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ1 ||
-          inputs.runner_kind == 'nmz2' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ2 ||
-          inputs.runner_kind == 'nmz3' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ3 ||
-          inputs.runner_kind == 'nmz4' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ4 ||
-          inputs.runner_kind == 'nmz5' && vars.LMCACHE_HCU_CACHE_ROOT_NMZ5 ||
-          ''
-        }}
+      HCU_CI_ARCHIVE_MODE: ${{ inputs.archive_reports && 'required' || 'off' }}
       HCU_CI_HCU_ARCH: ${{ vars.LMCACHE_HCU_ARCH }}
       HCU_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
       HCU_CI_EXPECTED_BASE_SHA: ${{ inputs.expected_base_sha }}

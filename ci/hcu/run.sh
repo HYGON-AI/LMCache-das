@@ -26,8 +26,8 @@ readonly MODEL_HELPER="${CONTROLLER_ROOT}/ci/hcu/model-ci.py"
 readonly DEPENDENCY_ASSET="/ci_public/lmcache-das/assets/dependencies/v0.4.2-cp310"
 readonly VISIBLE_DEVICES="${HCU_CI_VISIBLE_DEVICES:-0,1}"
 readonly RUNNER_LOCK="${HCU_CI_RUNNER_LOCK:-/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock}"
-readonly CACHE_ROOT="${HCU_CI_CACHE_ROOT:-}"
 readonly RUNNER_TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
+readonly CACHE_ROOT="${RUNNER_TEMP_ROOT}/lmcache-hcu-cache"
 readonly CONTAINER_MEMORY="${HCU_CI_CONTAINER_MEMORY:-56g}"
 readonly CONTAINER_CPUS="${HCU_CI_CONTAINER_CPUS:-32}"
 readonly OUTPUT_LIMIT="${HCU_CI_OUTPUT_LIMIT:-3g}"
@@ -84,12 +84,12 @@ ensure_within() {
 
 bind_mount_arguments() {
     local host_path="$1" container_path="$2" access="$3" resolved_host
-    [[ "${host_path}" == /* && "${container_path}" == /* ]]
-    [[ "${access}" == "ro" || "${access}" == "rw" ]]
-    [[ "${host_path}" != *:* && "${container_path}" != *:* ]]
-    [[ -e "${host_path}" ]]
-    resolved_host="$(readlink -e -- "${host_path}")"
-    [[ -n "${resolved_host}" && -d "${resolved_host}" && "${resolved_host}" != *:* ]]
+    [[ "${host_path}" == /* && "${container_path}" == /* ]] || return 3
+    [[ "${access}" == "ro" || "${access}" == "rw" ]] || return 3
+    [[ "${host_path}" != *:* && "${container_path}" != *:* ]] || return 3
+    [[ -e "${host_path}" ]] || return 3
+    resolved_host="$(readlink -e -- "${host_path}")" || return 3
+    [[ -n "${resolved_host}" && -d "${resolved_host}" && "${resolved_host}" != *:* ]] || return 3
     # The organization Docker wrapper rejects bind mounts expressed with
     # --mount, but accepts the equivalent validated -v form. Emit each token
     # separately so callers can consume it into an array without word splitting.
@@ -124,7 +124,7 @@ resolve_context() {
     NETWORK_NAME="lmcache-hcu-net-${RUN_KEY}"
     TEST_TOOL_ROOT="${TRUSTED_STATE_ROOT}/test-tool"
     if [[ "${JOB_ROLE}" == "model" ]]; then
-        PREBUILT_WHEEL_ROOT="${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework/wheels"
+        PREBUILT_WHEEL_ROOT="${SHARED_ROOT}/wheels/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework/wheels"
     fi
     if [[ -n "${CACHE_ROOT}" ]]; then
         CACHE_RUN_ROOT="${CACHE_ROOT}/${RUN_KEY}"
@@ -225,7 +225,7 @@ verify_prebuilt_wheel() {
     local framework_root staged_root staged_wheel
     framework_root="$(dirname "${PREBUILT_WHEEL_ROOT}")"
     [[ "$(readlink -m -- "${framework_root}")" == \
-        "${SHARED_ROOT}/${PROFILE}/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework" ]]
+        "${SHARED_ROOT}/wheels/${RUN_ID}/${ATTEMPT}/${SOURCE_SHA}/framework" ]] || return 3
     if [[ ! -x "${framework_root}" || ! -r "${framework_root}" ]]; then
         printf 'Framework archive is not traversable/readable: %s\n' "${framework_root}" >&2
         stat -c 'mode=%A uid=%u gid=%g path=%n' "${framework_root}" >&2 || true
@@ -239,7 +239,8 @@ verify_prebuilt_wheel() {
             return 3
         fi
     done
-    python3 - "${framework_root}/manifest.json" "${SOURCE_SHA}" <<'PY'
+    python3 - "${framework_root}/manifest.json" "${SOURCE_SHA}" \
+        "${CONTROLLER_SHA}" "${RUN_ID}" "${ATTEMPT}" <<'PY' || return 3
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
@@ -248,23 +249,26 @@ assert manifest.get("status") == "passed"
 assert manifest.get("source_sha") == sys.argv[2]
 assert manifest.get("job_role") == "framework"
 assert manifest.get("job_key") == "framework"
+assert manifest.get("controller_sha") == sys.argv[3]
+assert manifest.get("run_id") == sys.argv[4]
+assert manifest.get("attempt") == sys.argv[5]
 PY
-    (cd "${framework_root}" && sha256sum -c SHA256SUMS >/dev/null)
+    (cd "${framework_root}" && sha256sum -c SHA256SUMS >/dev/null) || return 3
     local -a wheels=()
     mapfile -t wheels < <(find "${PREBUILT_WHEEL_ROOT}" -maxdepth 1 \
         -type f -name '*.whl' -print | LC_ALL=C sort)
-    (( ${#wheels[@]} == 1 ))
+    (( ${#wheels[@]} == 1 )) || return 3
 
     # Expose only the verified wheel from a per-job trusted staging directory.
     # The shared archive is group-readable across organization runners, but it
     # is never mounted into an untrusted test container.
     staged_root="${TRUSTED_STATE_ROOT}/prebuilt-wheel"
     [[ ! -L "${staged_root}" ]]
-    install -d -m 0755 -- "${staged_root}"
+    install -d -m 0755 -- "${staged_root}" || return 3
     staged_wheel="${staged_root}/$(basename "${wheels[0]}")"
-    install -m 0444 -- "${wheels[0]}" "${staged_wheel}"
+    install -m 0444 -- "${wheels[0]}" "${staged_wheel}" || return 3
     [[ "$(sha256sum "${staged_wheel}" | awk '{print $1}')" == \
-        "$(sha256sum "${wheels[0]}" | awk '{print $1}')" ]]
+        "$(sha256sum "${wheels[0]}" | awk '{print $1}')" ]] || return 3
     PREBUILT_WHEEL_ROOT="${staged_root}"
 }
 
@@ -276,48 +280,51 @@ visible_device_count() {
 
 validate_cache_root() {
     model_tests_required || return 0
-    [[ -n "${CACHE_ROOT}" && "${CACHE_ROOT}" == /* ]]
-    [[ "${CACHE_ROOT}" == *"/lmcache-das/"* ]]
-    [[ "${CACHE_ROOT}" != "/" && "${CACHE_ROOT}" != "/tmp" && \
-       "${CACHE_ROOT}" != "/home" && "${CACHE_ROOT}" != "/ci_public" && \
-       "${CACHE_ROOT}" != "/ci_public/lmcache-das" ]]
-    mkdir -p "${CACHE_ROOT}"
-    [[ -d "${CACHE_ROOT}" && ! -L "${CACHE_ROOT}" ]]
-    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
-    [[ ! -e "${CACHE_RUN_ROOT}" ]]
+    # Runner-owned scratch is already allowed by the organization wrapper.
+    # Never mount the shared report tree as a writable test cache.
+    [[ -d "${RUNNER_TEMP_ROOT}" && ! -L "${RUNNER_TEMP_ROOT}" ]] || return 3
+    ensure_within "${CACHE_ROOT}" "${RUNNER_TEMP_ROOT}" || return 3
+    [[ ! -L "${CACHE_ROOT}" ]] || return 3
+    mkdir -p "${CACHE_ROOT}" || return 3
+    [[ "$(readlink -e -- "${CACHE_ROOT}")" == "${CACHE_ROOT}" ]] || return 3
+    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}" || return 3
+    [[ ! -e "${CACHE_RUN_ROOT}" && ! -L "${CACHE_RUN_ROOT}" ]] || return 3
+    mkdir -- "${CACHE_RUN_ROOT}" || return 3
     mkdir -p "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
-        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
+        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix" || return 3
     # Docker user-namespace remapping means container root is not the host
     # runner user. These run-scoped, non-secret cache mounts must be writable
     # by that remapped identity; the parent remains private and the complete
     # run directory is removed during finalization.
     chmod 0777 "${CACHE_RUN_ROOT}/cpu" "${CACHE_RUN_ROOT}/localdisk" \
-        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix"
+        "${CACHE_RUN_ROOT}/ssd" "${CACHE_RUN_ROOT}/posix" || return 3
     local directory probe
     for directory in cpu localdisk ssd posix; do
         probe="${CACHE_RUN_ROOT}/${directory}/.direct-io-probe"
-        dd if=/dev/zero of="${probe}" bs=4096 count=1 oflag=direct status=none
-        rm -f -- "${probe}"
+        dd if=/dev/zero of="${probe}" bs=4096 count=1 oflag=direct status=none || return 3
+        rm -f -- "${probe}" || return 3
     done
 }
 
 model_mount_arguments() {
     model_tests_required || return 0
-    local host_path container_path
+    local host_path container_path selected_mounts
+    selected_mounts="$(python3 "${MODEL_HELPER}" mounts \
+        --manifest "${MODEL_MANIFEST}" --profile "${MODEL_PROFILE}")" || return 3
+    [[ -n "${selected_mounts}" ]] || return 3
     while IFS=$'\t' read -r host_path container_path; do
         if [[ "${container_path}" == /llm/models/* ]]; then
-            [[ "${host_path}" == /public/* ]]
+            [[ "${host_path}" == /public/* ]] || return 3
         elif [[ "${container_path}" == "/public/ai_data/datasets/data" ]]; then
-            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data" ]]
+            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data" ]] || return 3
         elif [[ "${container_path}" == "/public/ai_data/datasets/cmmlu" ]]; then
-            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data/cmmlu" ]]
+            [[ "${host_path}" == "/public/opendas/DL_DATA/opencompass_data/cmmlu" ]] || return 3
         else
             return 3
         fi
-        [[ -d "${host_path}" && ! -L "${host_path}" ]]
-        bind_mount_arguments "${host_path}" "${container_path}" ro
-    done < <(python3 "${MODEL_HELPER}" mounts \
-        --manifest "${MODEL_MANIFEST}" --profile "${MODEL_PROFILE}")
+        [[ -d "${host_path}" && ! -L "${host_path}" ]] || return 3
+        bind_mount_arguments "${host_path}" "${container_path}" ro || return 3
+    done <<<"${selected_mounts}"
 }
 
 prepare_test_tool() {
@@ -375,9 +382,9 @@ host_preflight() {
     python3 "${MODEL_HELPER}" validate --manifest "${MODEL_MANIFEST}" \
         --profile "${MODEL_PROFILE}" --runner "${RUNNER_KIND}" \
         --visible-devices "${VISIBLE_DEVICES}" >/dev/null
-    validate_cache_root
-    model_mount_arguments >/dev/null
-    verify_prebuilt_wheel
+    validate_cache_root || return 3
+    model_mount_arguments >/dev/null || return 3
+    verify_prebuilt_wheel || return 3
     [[ "$(readlink -m -- "${SHARED_ROOT}")" == "/ci_public/lmcache-das" ]]
     [[ "$(readlink -m -- "${RUNNER_LOCK}")" == "/tmp/hcu-ci-gpu-locks/${RUNNER_KIND}-organization-hcu.lock" ]]
     mkdir -p "${SHARED_ROOT}" "$(dirname "${RUNNER_LOCK}")"
@@ -668,8 +675,8 @@ cleanup_internal_network() {
 
 cleanup_cache_run() {
     [[ -n "${CACHE_RUN_ROOT}" ]] || return 0
-    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}"
-    [[ ! -L "${CACHE_RUN_ROOT}" ]]
+    ensure_within "${CACHE_RUN_ROOT}" "${CACHE_ROOT}" || return 1
+    [[ ! -L "${CACHE_RUN_ROOT}" ]] || return 1
     if [[ -e "${CACHE_RUN_ROOT}" ]]; then
         rm -rf -- "${CACHE_RUN_ROOT}"
     fi
@@ -859,7 +866,7 @@ phase_finalize() {
         --attempt "${ATTEMPT}" --sha "${SOURCE_SHA}" --controller-sha "${CONTROLLER_SHA}" \
         --base-image "${BASE_IMAGE}" --base-image-id "${BASE_IMAGE_ID}" \
         --shared-root "${SHARED_ROOT}" --run-key "${RUN_KEY}" \
-        --cleanup-root "${WORK_ROOT}"
+        --cleanup-root "${WORK_ROOT}" --archive-mode "${HCU_CI_ARCHIVE_MODE:-required}"
     local final_rc=$?
     set -e
     if validate_job_status_file; then rm -f -- "${JOB_STATUS_FILE}"; fi

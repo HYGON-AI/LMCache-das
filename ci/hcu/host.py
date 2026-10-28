@@ -895,11 +895,21 @@ def prepare_shared_parent(shared_root, parts):
     current = shared_root
     for part in parts:
         current = current / part
-        current.mkdir(mode=0o2770, exist_ok=True)
+        created = False
+        try:
+            current.mkdir(mode=0o2770)
+            created = True
+        except FileExistsError:
+            pass
         info = os.lstat(str(current))
         if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
             raise HostError("Unsafe shared archive directory: {}".format(current))
-        os.chmod(str(current), 0o2770)
+        if created:
+            os.chmod(str(current), 0o2770)
+        if info.st_gid != root_info.st_gid or info.st_mode & 0o002:
+            raise HostError("Shared directory has an unsafe group or mode: {}".format(current))
+        if not os.access(str(current), os.R_OK | os.W_OK | os.X_OK):
+            raise HostError("Shared directory is not accessible: {}".format(current))
     return current
 
 
@@ -984,6 +994,34 @@ def cmd_capture_log(args):
     return 0
 
 
+def publish_wheel_bundle(spool, args, manifest):
+    """Share only the tested wheel; report retention is not a dependency."""
+    wheels = sorted((spool / "wheels").glob("*.whl"))
+    if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
+        raise HostError("Framework must export exactly one regular wheel")
+    with tempfile.TemporaryDirectory(prefix="wheel-bundle-", dir=args.cleanup_root) as temporary:
+        bundle = Path(temporary)
+        (bundle / "wheels").mkdir()
+        shutil.copyfile(str(wheels[0]), str(bundle / "wheels" / wheels[0].name))
+        receipt = dict(manifest, profile="wheels", test_profile=args.profile,
+                       wheel_file=wheels[0].name, wheel_sha256=sha256_file(wheels[0]))
+        atomic_json(bundle / "manifest.json", receipt)
+        final = publish(bundle, args.shared_root, "wheels", args.run_id, args.attempt,
+                        args.sha, "framework", args.run_key + "-wheel", str(bundle))
+    print("Published current-SHA wheel bundle: {}".format(final))
+
+
+def cleanup_disposable_workspace(value):
+    root = Path(value)
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if not runner_temp:
+        raise HostError("RUNNER_TEMP is required for scoped workspace cleanup")
+    allowed = Path(runner_temp).resolve() / "lmcache-hcu"
+    if root.is_symlink() or not is_within(root, allowed) or root.resolve() == allowed:
+        raise HostError("Refusing unsafe workspace cleanup: {}".format(root))
+    shutil.rmtree(str(root))
+
+
 def cmd_finalize(args):
     spool = Path(args.spool).resolve()
     problems = []
@@ -1055,11 +1093,37 @@ def cmd_finalize(args):
         "base_image": args.base_image,
         "base_image_id": args.base_image_id,
         "primary_exit_code": primary_rc,
+        "execution_exit_code": args.primary_rc,
+        "validation_exit_code": 9 if problems else 0,
+        "wheel_transfer_exit_code": 0,
         "cleanup_exit_code": args.cleanup_rc,
         "publish_exit_code": 0,
         "status": status,
     }
     atomic_json(spool / "manifest.json", manifest)
+    if primary_rc == 0 and args.job_role == "framework":
+        try:
+            publish_wheel_bundle(spool, args, manifest)
+        except Exception as exc:
+            primary_rc = 12
+            manifest.update(primary_exit_code=12, wheel_transfer_exit_code=12, status="failed")
+            atomic_json(spool / "manifest.json", manifest)
+            summary = [line.replace("Status: `passed`", "Status: `failed`")
+                       .replace("Primary exit code: `0`", "Primary exit code: `12`") for line in summary]
+            summary.append("- Required wheel transfer failed: {}".format(exc))
+            (spool / "summary.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+            print("Required wheel transfer failed: {}".format(exc), file=sys.stderr)
+    if getattr(args, "archive_mode", "required") == "off":
+        # JUnit/inventory/model validation above remains mandatory. Only the
+        # optional, long-lived log/report copy is disabled for ordinary PRs.
+        print((spool / "summary.md").read_text(encoding="utf-8"))
+        try:
+            cleanup_disposable_workspace(args.cleanup_root)
+        except Exception as exc:
+            print("Workspace cleanup failed: {}".format(exc), file=sys.stderr)
+            primary_rc = primary_rc or 10
+        print("Final job exit code: {}. Shared report archiving is disabled.".format(primary_rc))
+        return primary_rc
     try:
         final = publish(
             spool,
@@ -1279,6 +1343,7 @@ def parser():
     final.add_argument("--shared-root", required=True)
     final.add_argument("--run-key", required=True)
     final.add_argument("--cleanup-root", required=True)
+    final.add_argument("--archive-mode", choices=("required", "off"), default="required")
     final.set_defaults(func=cmd_finalize)
 
     selftest = commands.add_parser("selftest")
