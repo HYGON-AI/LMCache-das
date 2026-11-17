@@ -140,7 +140,7 @@ class RocmProfile(BuildProfile):
                 "completion_recorder.cpp",
             ]
         )
-        define_macros = [("__HIP_PLATFORM_HCC__", "1"), ("USE_ROCM", "1")]
+        define_macros = [("__HIP_PLATFORM_HCC__", "1"), ("USE_ROCM", "1"), ("LMCACHE_DISABLE_STREAMING_IO", "1")]
         ext_modules = [
             cpp_extension.CppExtension(
                 "lmcache.cuda_ops",
