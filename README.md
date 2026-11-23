@@ -1,60 +1,40 @@
-This repository is based on the following fixed upstream baseline:
+This repository is based on the following fixed upstream baseline:<br>
 
-- Upstream project: LMCache
-- Upstream repository: https://github.com/LMCache/LMCache.git
-- Upstream tag: `v0.5.6`
-- Upstream commit: `3e11e108` (short SHA)
-- Upstream license: Apache-2.0
+ • Upstream project: LMCache<br>
+ • Upstream repository: GitHub - https://github.com/LMCache/LMCache.git: LMCache is a KV cache management layer for LLM inference.<br>
+ • Upstream tag: v0.5.6<br>
+ • Upstream commit: 3e11e10812b448142c6cdb177a3058652bd826fa<br>
+ • Upstream license: Apache-2.0<br>
 
 HCU adaptations, modifications, and original contributions by Hygon Information Technology Co., Ltd. are licensed under the Apache License, Version 2.0.
-
 Modified by Hygon Information Technology Co., Ltd.
-
-Original upstream copyright notices and applicable license terms are retained.
+Original copyright notices and license terms from the upstream LMCache project are retained. See LICENSE and Third-Party Notices for details.
 
 # LMCache-HCU
 
 LMCache-HCU is an overlay/patch package for adapting upstream LMCache to Hygon HCU / ROCm / HIP environments.
 
-This version provides source-level compatibility fixes for LMCache v0.5.6 without maintaining a separate copy of the upstream LMCache source tree.
-
 ## Compatibility Matrix
 
 Please ensure your environment matches the versions below.
 
-| LMCache-HCU | LMCache | vLLM Version |
-| :--- | :--- | :--- |
-| **0.5.6+hcu** | **v0.5.6** | Deployment-dependent; not pinned by this package |
 
-The source patches target the fixed upstream LMCache v0.5.6 baseline. HCU runtime compatibility must be validated with the target vLLM, PyTorch, and ROCm/DTK environment.
+| LMCache-hcu | LMCache | vLLM Version |
+| :--- | :--- | :--- |
+| **v0.5.6** | **v0.5.6** | **v0.28.1** |
 
 ## Design
 
-This version uses source patches implemented in `lmcache_hcu/integration/patch/`.
+There are two patch layers:
 
-The patch framework:
+1. Runtime monkey patches in `lmcache_hcu/__init__.py`
+   - Triggered by `import lmcache_hcu`.
 
-1. Locates the upstream LMCache source tree using an explicitly provided path.
-2. Verifies the expected LMCache Git baseline.
-3. Checks the original and patched source content before applying modifications.
-4. Creates timestamped `.bak.<timestamp>` backups before modifying files.
-5. Supports repeated execution without duplicating previously applied patches.
-
-### Patch 1: ROCm Build Compatibility
-
-Target file: `setup_extensions/build_profiles/rocm.py`
-
-Adds the compile-time macro `LMCACHE_DISABLE_STREAMING_IO=1` to the ROCm build profile. This avoids the streaming I/O instruction path in the affected extension build for the target HCU environment.
-
-**Apply this patch before building LMCache.** If an extension was built before applying the patch, it must be rebuilt for the macro to take effect.
-
-### Patch 2: Multi-node Device Mapping
-
-Target file: `lmcache/integration/vllm/utils.py`
-
-Updates `calculate_local_rank_and_world_size()` for multi-node deployments. The multi-node path uses the device already bound by vLLM (`torch_dev.current_device()`) and the number of locally visible devices (`torch_dev.device_count()`), instead of assuming tensor parallelism is always intra-node and pipeline parallelism is inter-node.
-
-The implementation assumes one worker per visible device and requires the worker's device to have been bound before the function is called. It is not a general guarantee of compatibility with every distributed topology.
+2. Source injection patches in `lmcache_hcu/integration/patch/`
+   - Modeled after `LMCache-das/lmcache_hcu/integration/patch`.
+   - Disables streaming I/O during ROCm builds by adding LMCACHE_DISABLE_STREAMING_IO=1 in setup_extensions/build_profiles/rocm.py.
+   - Fixes multi-node vLLM local device mapping by updating calculate_local_rank_and_world_size() in lmcache/integration/vllm/utils.py.
+   - Keeps source modifications intentionally tiny: inject `import lmcache_hcu` at stable trigger points.
 
 ## Important Files
 
@@ -88,12 +68,8 @@ LMCache-das/
 ### 1. Prepare upstream LMCache v0.5.6
 
 ```bash
-git clone --branch v0.5.6 \
-  https://github.com/LMCache/LMCache.git \
-  LMCache-v0.5.6
+git clone -b v0.5.6 https://github.com/LMCache/LMCache.git
 ```
-
-Keep the upstream Git history and `v0.5.6` tag available. The current patch manager verifies the Git baseline and checks the exact expected source content.
 
 ### 2. Install LMCache-HCU
 
@@ -104,93 +80,68 @@ cd /path/to/LMCache-das
 python3 -m pip install --no-build-isolation -e .
 ```
 
-This installs the Python source-patch manager. LMCache-HCU does not compile a separate HCU C++/HIP extension in this version.
-
-### 3. Check and apply HCU source patches
-
-Check the upstream checkout:
-
-```bash
-lmcache-hcu-apply-patches \
-  --lmcache-root /path/to/LMCache-v0.5.6 \
-  --mode check
-```
+### 3. Apply HCU source patches
 
 Apply both patches:
 
 ```bash
 lmcache-hcu-apply-patches \
-  --lmcache-root /path/to/LMCache-v0.5.6 \
+  --lmcache-root /path/to/LMCache \
   --mode install
 ```
 
-Check again:
-
-```bash
-lmcache-hcu-apply-patches \
-  --lmcache-root /path/to/LMCache-v0.5.6 \
-  --mode check
-```
-
-Both patches should report `applied`. Repeating `install` skips correctly applied patches.
-
 ### 4. Build upstream LMCache
 
-After applying the patches, use your platform's supported HCU/ROCm build environment to build and install upstream LMCache. For example, if your environment already provides the required HIP compiler and dependencies:
+After applying the patches, use your platform's supported HCU/ROCm build environment to build and install upstream LMCache.
 
 ```bash
-cd /path/to/LMCache-v0.5.6
+cd /path/to/LMCache
 BUILD_WITH_HIP=1 python3 -m pip install --no-build-isolation -e .
 ```
 
-Additional variables such as the target ROCm architecture, `CXX`, and compiler compatibility settings depend on the HCU deployment. Follow the applicable platform-specific build instructions.
-
 ## Usage
 
-Inspect the changes made to upstream LMCache:
+Example usage of LMCache with vLLM:
 
 ```bash
-git -C /path/to/LMCache-v0.5.6 diff -- \
-  setup_extensions/build_profiles/rocm.py \
-  lmcache/integration/vllm/utils.py
+vllm serve /models/Qwen/Qwen3-8B \
+  --tensor-parallel-size 8 \
+  --port 20013 \
+  --trust-remote-code \
+  --disable-log-requests \
+  --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
 ```
-
-The patch manager supports:
-
-| Mode | Description |
-| :--- | :--- |
-| `check` | Verify the baseline and report patch states without modifying files |
-| `install` | Apply missing source patches |
-
-This version does not provide runtime monkey patches, a custom vLLM Connector, or a separate custom HIP operator. Runtime compatibility should be verified in the target HCU deployment.
 
 ## Uninstall
 
-To remove the LMCache-HCU Python package:
-
 ```bash
-python3 -m pip uninstall lmcache-hcu
+pip uninstall lmcache-hcu
 ```
 
-**Uninstalling the Python package does not revert changes already applied to upstream LMCache source files.** The patch manager creates timestamped backups, but restoration should be performed carefully to avoid overwriting subsequent user changes. The current CLI does not provide an automatic uninstall mode.
+Note: Uninstalling LMCache-HCU does not automatically revert source patches applied to upstream LMCache.
 
 ## Upgrade
 
-For future LMCache-HCU versions:
+Upgrade by uninstalling the old LMCache-HCU package first, then installing the new version.
 
-1. Review the compatibility matrix and supported upstream baseline.
-2. Prepare a clean checkout of the supported LMCache version.
-3. Install the corresponding LMCache-HCU package.
-4. Apply its source patches before building LMCache.
-5. Rebuild LMCache and validate the target HCU deployment.
+Recommended flow:
 
-Do not assume patches designed for v0.5.6 can be applied to other LMCache versions.
+```bash
+# 1. Remove the old package.
+pip uninstall lmcache-hcu
+
+# 2. Install the new package version.
+cd /path/to/lmcache-hcu
+python3 -m pip install --no-build-isolation -e .
+```
 
 ## License and Attribution
 
-This repository is licensed under the Apache License, Version 2.0.
+This repository is based on LMCache and is licensed under the Apache License, Version 2.0.
 
-Original upstream LMCache copyright, license, and attribution notices are retained where applicable. HCU compatibility changes have been made by Hygon Information Technology Co., Ltd.
+Original copyright, license, and attribution notices from the upstream LMCache project are retained.
+
+Portions of this repository have been modified by Hygon Information Technology Co., Ltd. for HCU enablement and compatibility changes.
 
 Copyright 2026 Hygon Information Technology Co., Ltd.
 
