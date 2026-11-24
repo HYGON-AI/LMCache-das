@@ -32,7 +32,6 @@ There are two patch layers:
 
 2. Source injection patches in `lmcache_hcu/integration/patch/`
    - Modeled after `LMCache-das/lmcache_hcu/integration/patch`.
-   - Disables streaming I/O during ROCm builds by adding LMCACHE_DISABLE_STREAMING_IO=1 in setup_extensions/build_profiles/rocm.py.
    - Fixes multi-node vLLM local device mapping by updating calculate_local_rank_and_world_size() in lmcache/integration/vllm/utils.py.
    - Keeps source modifications intentionally tiny: inject `import lmcache_hcu` at stable trigger points.
 
@@ -51,7 +50,6 @@ LMCache-das/
 │           ├── apply_patch.py
 │           └── lmcache/
 │               ├── __init__.py
-│               ├── rocm_build_patch.py
 │               └── device_mapping_patch.py
 ├── tests/
 │   └── __init__.py
@@ -65,43 +63,51 @@ LMCache-das/
 
 ## Build
 
-### 1. Prepare upstream LMCache v0.5.6
+Typical editable install on a HCU/ROCm/DTK machine:
+
+first install the baseline LMCache:
 
 ```bash
 git clone -b v0.5.6 https://github.com/LMCache/LMCache.git
+cd LMCache
+PYTORCH_ROCM_ARCH="{your_rocm_arch}" \
+TORCH_DONT_CHECK_COMPILER_ABI=1 \
+HIPCC_COMPILE_FLAGS_APPEND="-DLMCACHE_DISABLE_STREAMING_IO=1" \
+HIPCC_VERBOSE=1 \
+CXX=hipcc \
+BUILD_WITH_HIP=1 \
+python3 -m pip install -e . --no-build-isolation
 ```
 
-### 2. Install LMCache-HCU
-
-From the LMCache-das repository:
-
+Then install LMCache-hcu:
 ```bash
-cd /path/to/LMCache-das
+cd /path/to/lmcache-das
+PYTORCH_ROCM_ARCH="{your_rocm_arch}" \
+TORCH_DONT_CHECK_COMPILER_ABI=1 \
+CXX=hipcc \
+BUILD_WITH_HIP=1 \
+# Optional:
+HCU_ARCH=gfx906  # Platform-specific value; use rocminfo | grep -i "name:" to query it. gfx906 is only an example.
 python3 -m pip install --no-build-isolation -e .
-```
-
-### 3. Apply HCU source patches
-
-Apply both patches:
-
-```bash
-lmcache-hcu-apply-patches \
-  --lmcache-root /path/to/LMCache \
-  --mode install
-```
-
-### 4. Build upstream LMCache
-
-After applying the patches, use your platform's supported HCU/ROCm build environment to build and install upstream LMCache.
-
-```bash
-cd /path/to/LMCache
-BUILD_WITH_HIP=1 python3 -m pip install --no-build-isolation -e .
 ```
 
 ## Usage
 
-Example usage of LMCache with vLLM:
+We use the upstream LMCacheMPConnector to integrate LMCache with vLLM in multi-process (MP) mode.
+
+Example usage of LMCache MP Server with vLLM:
+
+1. Start LMCache MP Server
+
+```bash
+lmcache server \
+  --host 127.0.0.1 \
+  --port 5555 \
+  --l1-size-gb 20 \
+  --eviction-policy LRU
+```
+
+2. Start vLLM with LMCache MP Connector
 
 ```bash
 vllm serve /models/Qwen/Qwen3-8B \
@@ -109,7 +115,7 @@ vllm serve /models/Qwen/Qwen3-8B \
   --port 20013 \
   --trust-remote-code \
   --disable-log-requests \
-  --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+  --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_connector_extra_config":{"lmcache.mp.host":"127.0.0.1","lmcache.mp.port":5555}}'
 ```
 
 ## Uninstall

@@ -33,11 +33,6 @@ UPSTREAM_COMMIT_PREFIX = "3e11e108"
 # Module, patcher class, and conversion method.
 PATCH_TASKS = [
     (
-        "lmcache_hcu.integration.patch.lmcache.rocm_build_patch",
-        "LMCacheRocmBuildPatcher",
-        "_replace_define_macros",
-    ),
-    (
         "lmcache_hcu.integration.patch.lmcache.device_mapping_patch",
         "LMCacheDeviceMappingPatcher",
         "_replace_function",
