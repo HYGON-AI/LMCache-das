@@ -18,168 +18,55 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import logging
-import subprocess
-from pathlib import Path
+import os
+from typing import Iterable, Literal
 
 from lmcache_hcu.integration.patch.base_patcher import logger
 
 
-# Supported LMCache source revision.
-UPSTREAM_TAG = "v0.5.6"
-UPSTREAM_COMMIT_PREFIX = "3e11e108"
-
-
-# Module, patcher class, and conversion method.
 PATCH_TASKS = [
-    (
-        "lmcache_hcu.integration.patch.lmcache.device_mapping_patch",
-        "LMCacheDeviceMappingPatcher",
-        "_replace_function",
-    ),
+    ("lmcache", "lmcache_hcu.integration.patch.lmcache.device_mapping_patch", "LMCacheDeviceMappingPatcher"),
 ]
 
 
-def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Git command failed: {' '.join(args)}\n"
-            f"{result.stderr.strip()}"
-        )
-    return result.stdout
+def is_installed(package_name: str) -> bool:
+    return importlib.util.find_spec(package_name) is not None
 
 
-def verify_source_root(root: Path) -> None:
-    """Require a Git checkout based on LMCache v0.5.6."""
-
-    if not (root / "lmcache" / "__init__.py").is_file():
-        raise RuntimeError(f"Not an LMCache source tree: {root}")
-
-    git_root = Path(
-        _git(root, "rev-parse", "--show-toplevel").strip()
-    ).resolve()
-
-    if git_root != root:
-        raise RuntimeError(
-            f"LMCache root must be the Git repository root: {git_root}"
-        )
-
-    commit = _git(
-        root, "rev-parse", f"{UPSTREAM_TAG}^{{commit}}"
-    ).strip()
-
-    if not commit.startswith(UPSTREAM_COMMIT_PREFIX):
-        raise RuntimeError(
-            f"Unexpected LMCache v0.5.6 revision: {commit}"
-        )
-
-    result = subprocess.run(
-        [
-            "git", "-C", str(root),
-            "merge-base", "--is-ancestor",
-            UPSTREAM_TAG, "HEAD",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            "Source HEAD is not based on LMCache v0.5.6"
-        )
-
-
-def inspect_patches(root: Path):
-    """Validate all targets before modifying any source file."""
-
-    states = []
-
-    for module_path, class_name, converter_name in PATCH_TASKS:
-        module = importlib.import_module(module_path)
-        patcher = getattr(module, class_name)
-
-        target = patcher._target_file(root)
-
-        original = _git(
-            root, "show",
-            f"{UPSTREAM_TAG}:{patcher.TARGET_FILE}",
-        )
-
-        expected = getattr(patcher, converter_name)(original)
-        current = target.read_text(encoding="utf-8")
-
-        if current == original:
-            state = "original"
-        elif current == expected:
-            state = "applied"
-        else:
-            raise RuntimeError(
-                f"Unexpected or partially patched source: {target}"
-            )
-
-        states.append((patcher, state))
-
-    return states
-
-
-def run_integration_patches(root: Path, mode: str) -> None:
-    verify_source_root(root)
-
-    # Preflight all patches before writing anything.
-    states = inspect_patches(root)
-
-    for patcher, state in states:
-        logger.info("%s: %s", patcher.__name__, state)
-
-    if mode == "check":
-        logger.info("All source patch checks passed")
+def run_integration_patches(
+    tasks: Iterable[tuple[str, str, str]] = PATCH_TASKS,
+    mode: Literal["install", "uninstall"] = "install",
+) -> None:
+    if os.environ.get("SKIP_LMCACHE_HCU_PATCH", "0") == "1":
+        logger.info("SKIP_LMCACHE_HCU_PATCH=1; skip LMCache-HCU source patches")
         return
 
-    for patcher, state in states:
-        if state == "applied":
-            logger.info("%s already applied; skip", patcher.__name__)
+    logger.info("Initializing LMCache-HCU patch manager in %s mode...", mode)
+    action_name = "apply_all" if mode == "install" else "uninstall_all"
+    for package_name, module_path, class_name in tasks:
+        if not is_installed(package_name):
+            logger.warning("Package %s is not installed; skip %s", package_name, class_name)
             continue
-
-        logger.info("Applying %s", patcher.__name__)
-        patcher.apply_all(root)
-
-    logger.info("LMCache-HCU patches completed")
+        module = importlib.import_module(module_path)
+        patcher_cls = getattr(module, class_name)
+        logger.info("%s %s from %s", "Applying" if mode == "install" else "Uninstalling", class_name, module_path)
+        getattr(patcher_cls, action_name)()
+    logger.info("LMCache-HCU patch manager finished")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="LMCache v0.5.6 HCU source patch manager"
-    )
-
-    parser.add_argument(
-        "--lmcache-root",
-        type=Path,
-        required=True,
-        help="Path to the LMCache v0.5.6 Git source tree",
-    )
-
+    parser = argparse.ArgumentParser(description="Apply or uninstall LMCache-HCU source patches")
     parser.add_argument(
         "--mode",
-        choices=("check", "install"),
-        default="check",
+        choices=("install", "uninstall"),
+        default="install",
+        help="install applies source patches; uninstall restores each target from its earliest .bak backup",
     )
-
     args = parser.parse_args()
-
     logging.basicConfig(level=logging.INFO)
-
-    try:
-        root = args.lmcache_root.expanduser().resolve(strict=True)
-        run_integration_patches(root, args.mode)
-    except (OSError, RuntimeError, ValueError) as exc:
-        parser.exit(1, f"ERROR: {exc}\n")
+    run_integration_patches(mode=args.mode)
 
 
 if __name__ == "__main__":

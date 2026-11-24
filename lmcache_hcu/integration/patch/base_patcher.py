@@ -120,36 +120,6 @@ class BasePatcher:
         return Path(spec.origin)
 
     @staticmethod
-    def find_source_file(
-        source_root: str | Path,
-        relative_path: str,
-    ) -> Path:
-        """Locate a file in an LMCache source tree."""
-
-        root = Path(source_root).expanduser().resolve(strict=True)
-
-        if not (root / "lmcache" / "__init__.py").is_file():
-            raise ValueError(
-                f"Not an LMCache source directory: {root}"
-            )
-
-        relative = Path(relative_path)
-
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError(
-                f"Invalid relative path: {relative_path}"
-            )
-
-        target = (root / relative).resolve(strict=True)
-
-        if not target.is_relative_to(root) or not target.is_file():
-            raise ValueError(
-                f"Invalid target file: {target}"
-            )
-
-        return target
-
-    @staticmethod
     def backup_file(path: Path) -> Path:
         backup = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
         shutil.copy2(path, backup)

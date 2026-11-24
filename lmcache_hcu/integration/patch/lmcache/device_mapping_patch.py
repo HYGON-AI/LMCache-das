@@ -21,6 +21,7 @@ from pathlib import Path
 from lmcache_hcu.integration.patch.base_patcher import (
     BasePatcher,
     TextPatch,
+    VersionRange,
 )
 
 
@@ -77,9 +78,14 @@ class LMCacheDeviceMappingPatcher(BasePatcher):
         )
         return local_worker_id, local_world_size'''
 
-    @classmethod
-    def _target_file(cls, source_root: str | Path) -> Path:
-        return cls.find_source_file(source_root, cls.TARGET_FILE)
+    PACKAGE_NAME = "lmcache"
+    VERSION_SERIES = (VersionRange("0.5.6", "0.5.7"),)
+
+    @staticmethod
+    def _target_file() -> Path:
+        found = BasePatcher.find_module_path("lmcache")
+        package_dir = found if found.is_dir() else found.parent
+        return package_dir / "integration" / "vllm" / "utils.py"
 
     @classmethod
     def _replace_function(cls, text: str) -> str:
@@ -98,8 +104,11 @@ class LMCacheDeviceMappingPatcher(BasePatcher):
         return text
 
     @classmethod
-    def apply_all(cls, source_root: str | Path) -> bool:
-        target = cls._target_file(source_root)
+    def apply_all(cls) -> bool:
+        if not cls.should_run_for_version():
+            return False
+
+        target = cls._target_file()
         text = target.read_text(encoding="utf-8")
 
         original = (

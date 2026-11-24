@@ -88,8 +88,10 @@ CXX=hipcc \
 BUILD_WITH_HIP=1 \
 # Optional:
 HCU_ARCH=gfx906  # Platform-specific value; use rocminfo | grep -i "name:" to query it. gfx906 is only an example.
-python3 -m pip install --no-build-isolation -e .
+python3 -m pip install --no-build-isolation -e . && \
+lmcache-hcu-apply-patches --mode install
 ```
+
 
 ## Usage
 
@@ -114,7 +116,6 @@ vllm serve /models/Qwen/Qwen3-8B \
   --tensor-parallel-size 8 \
   --port 20013 \
   --trust-remote-code \
-  --disable-log-requests \
   --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_connector_extra_config":{"lmcache.mp.host":"127.0.0.1","lmcache.mp.port":5555}}'
 ```
 
@@ -138,6 +139,12 @@ pip uninstall lmcache-hcu
 
 # 2. Install the new package version.
 cd /path/to/lmcache-hcu
+PYTORCH_ROCM_ARCH="{your_rocm_arch}" \
+TORCH_DONT_CHECK_COMPILER_ABI=1 \
+CXX=hipcc \
+BUILD_WITH_HIP=1 \
+# Optional:
+HCU_ARCH=gfx906  # Platform-specific value; use rocminfo | grep -i "name:" to query it. gfx906 is only an example.
 python3 -m pip install --no-build-isolation -e .
 ```
 
