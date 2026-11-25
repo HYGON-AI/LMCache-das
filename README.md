@@ -32,7 +32,6 @@ There are two patch layers:
 
 2. Source injection patches in `lmcache_hcu/integration/patch/`
    - Modeled after `LMCache-das/lmcache_hcu/integration/patch`.
-   - Fixes multi-node vLLM local device mapping by updating calculate_local_rank_and_world_size() in lmcache/integration/vllm/utils.py.
    - Keeps source modifications intentionally tiny: inject `import lmcache_hcu` at stable trigger points.
 
 ## Important Files
@@ -49,8 +48,7 @@ LMCache-das/
 │           ├── base_patcher.py
 │           ├── apply_patch.py
 │           └── lmcache/
-│               ├── __init__.py
-│               └── device_mapping_patch.py
+│               └── __init__.py
 ├── tests/
 │   └── __init__.py
 ├── LICENSE
@@ -88,8 +86,7 @@ CXX=hipcc \
 BUILD_WITH_HIP=1 \
 # Optional:
 HCU_ARCH=gfx906  # Platform-specific value; use rocminfo | grep -i "name:" to query it. gfx906 is only an example.
-python3 -m pip install --no-build-isolation -e . && \
-lmcache-hcu-apply-patches --mode install
+python3 -m pip install --no-build-isolation -e .
 ```
 
 

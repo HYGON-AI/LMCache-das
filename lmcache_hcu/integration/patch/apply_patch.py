@@ -26,9 +26,7 @@ from typing import Iterable, Literal
 from lmcache_hcu.integration.patch.base_patcher import logger
 
 
-PATCH_TASKS = [
-    ("lmcache", "lmcache_hcu.integration.patch.lmcache.device_mapping_patch", "LMCacheDeviceMappingPatcher"),
-]
+PATCH_TASKS = []
 
 
 def is_installed(package_name: str) -> bool:
