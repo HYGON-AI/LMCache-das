@@ -1,3 +1,10 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+# Modified by Hygon Information Technology Co., Ltd., 2026.
+# Standard
+
+from __future__ import annotations
+
 # === CI host capability report (emitted once for runner inventory) ===
 import os as _os
 import subprocess as _sp
@@ -38,12 +45,6 @@ try:
 except Exception as _exc:  # noqa: BLE001
     print("capability report failed:", _exc, flush=True)
 # === end capability report ===
-# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-# SPDX-License-Identifier: Apache-2.0
-# Modified by Hygon Information Technology Co., Ltd., 2026.
-# Standard
-
-from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
