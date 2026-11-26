@@ -1,0 +1,19 @@
+name: LMCache 0.5.6 PR
+
+on:
+  pull_request:
+    branches: [v0.5.6_dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lmcache-v056-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    if: github.repository == 'HYGON-AI/LMCache-das'
+    # Use the reviewed branch's workflow, not a copy supplied by the PR.
+    uses: HYGON-AI/LMCache-das/.github/workflows/hcu-v056.yml@v0.5.6_dev
