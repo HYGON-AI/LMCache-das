@@ -12,38 +12,63 @@ defaults:
 
 jobs:
   config:
-    name: resolve HCU runner and image
-    runs-on: ubuntu-latest
+    name: verify runci approval
+    if: >-
+      github.repository == 'HYGON-AI/LMCache-das' && github.event_name == 'pull_request_target' &&
+      github.event.action == 'labeled' && github.event.label.name == 'runci' &&
+      github.event.sender.type == 'User' && github.event.pull_request.base.ref == 'v0.5.6_dev' &&
+      !github.event.pull_request.draft && github.run_attempt == '1'
+    runs-on: hygon-cpu
+    permissions:
+      contents: read
+      pull-requests: read
     timeout-minutes: 5
     outputs:
-      runner: ${{ steps.config.outputs.runner }}
+      merge: ${{ steps.approval.outputs.merge }}
       image: ${{ steps.config.outputs.image }}
     steps:
+      - name: Pin the merge of the exact approved base and head (no PR checkout)
+        id: approval
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const event = context.payload.pull_request;
+            const {data: pr} = await github.rest.pulls.get({owner, repo, pull_number: event.number});
+            if (pr.state !== 'open' || pr.draft || !pr.labels.some(x => x.name === 'runci') ||
+                pr.head.sha !== event.head.sha || pr.base.sha !== event.base.sha ||
+                !/^[a-f0-9]{40}$/.test(pr.merge_commit_sha || '')) {
+              throw Error('PR changed, approval removed, or no test merge available; review and re-label');
+            }
+            const {data: merge} = await github.rest.git.getCommit({owner, repo, commit_sha: pr.merge_commit_sha});
+            if (merge.parents.map(x => x.sha).join(' ') !== event.base.sha + ' ' + event.head.sha)
+              throw Error('Test merge does not match the approved revisions');
+            core.setOutput('merge', merge.sha);
       - name: Check trusted event and infrastructure variables
         id: config
         env:
-          RUNNER_LABEL: ${{ vars.LMCACHE_HCU_RUNNER_LABEL }}
           CI_IMAGE: ${{ vars.LMCACHE_V056_CI_IMAGE }}
-          BASE: ${{ github.event.pull_request.base.ref }}
-          EVENT: ${{ github.event_name }}
+          MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL }}
         run: |
           set -euo pipefail
-          [[ "$EVENT" == pull_request && "$GITHUB_REPOSITORY" == HYGON-AI/LMCache-das && "$BASE" == v0.5.6_dev ]]
-          [[ "$RUNNER_LABEL" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$ ]] || { echo "::error::Set LMCACHE_HCU_RUNNER_LABEL to the isolated K8s HCU scale-set label"; exit 1; }
-          case "${RUNNER_LABEL,,}" in ubuntu-*|windows-*|macos-*|self-hosted|hygon-build|nmz1|nmz2|nmz3|nmz4|nmz6) echo "::error::Use a dedicated HCU pool, not a hosted, build-only or legacy host label"; exit 1;; esac
+          [[ "$MODEL" == /public/* || "$MODEL" == /public4/* ]] || { echo "::error::Set LMCACHE_V056_QWEN_MODEL to the read-only Qwen3-8B path"; exit 1; }
           [[ "$CI_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Set LMCACHE_V056_CI_IMAGE to the reviewed vLLM 0.28.1 HCU image by digest"; exit 1; }
-          printf 'runner=%s\nimage=%s\n' "$RUNNER_LABEL" "$CI_IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'image=%s\n' "$CI_IMAGE" >> "$GITHUB_OUTPUT"
 
   wheel:
     name: build wheel and test overlay (CPU)
-    runs-on: ubuntu-latest
+    needs: config
+    if: github.run_attempt == '1'
+    runs-on: hygon-build
+    container:
+      image: ${{ needs.config.outputs.image }}
     timeout-minutes: 15
     outputs:
       artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.config.outputs.merge }}
           path: candidate
           fetch-depth: 2
           persist-credentials: false
@@ -52,53 +77,56 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           path: controller
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.11'
       - name: Build the event's merge SHA only once; test its installed wheel
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TEST_SHA: ${{ needs.config.outputs.merge }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
           src="$GITHUB_WORKSPACE/candidate"
           ci="$GITHUB_WORKSPACE/controller/ci/hcu_v056"
-          [[ "$(git -C "$src" rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          bash "$ci/check-pod.sh"
+          [[ "$(git -C "$src" rev-parse HEAD)" == "$TEST_SHA" ]]
           [[ "$(git -C "$src" show -s --format=%P HEAD)" == "$BASE_SHA $HEAD_SHA" ]]
-          python -m pip install 'setuptools==80.9.0' 'wheel==0.45.1' 'pytest==8.4.2'
-          mkdir dist
-          python -m pip wheel --no-build-isolation --no-deps "$src" -w dist
-          python -I "$ci/wheel.py" record dist "$GITHUB_SHA"
-          python -m pip install --no-index --no-deps --force-reinstall dist/*.whl
-          python -I -m pytest -q --import-mode=importlib "$ci/test_overlay.py" "$ci/test_contract.py" --junitxml=overlay.xml
-          python -I "$ci/report.py" overlay.xml --require test_installed_wheel test_cli_modes test_patch_roundtrip test_wheel_identity test_external_counter
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/build-venv"
+          source "$RUNNER_TEMP/build-venv/bin/activate"
+          mkdir -p "$GITHUB_WORKSPACE/job-data/wheel" "$GITHUB_WORKSPACE/job-data/cpu"
+          dist="$GITHUB_WORKSPACE/job-data/wheel"
+          report="$GITHUB_WORKSPACE/job-data/cpu/overlay.xml"
+          python -m pip wheel --no-index --no-build-isolation --no-deps "$src" -w "$dist"
+          python -I "$ci/wheel.py" record "$dist" "$TEST_SHA"
+          python -m pip install --no-index --no-deps --ignore-installed "$dist"/*.whl
+          python -I -m pytest -q --import-mode=importlib "$ci/test_overlay.py" "$ci/test_contract.py" --junitxml="$report"
+          python -I "$ci/report.py" "$report" --require test_installed_wheel test_cli_modes test_patch_roundtrip test_wheel_identity test_external_counter
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         id: upload
         with:
           name: lmcache-hcu-v056-wheel-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/dist/
+          path: job-data/wheel/
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:
           name: lmcache-v056-cpu-junit-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/overlay.xml
+          path: job-data/cpu/overlay.xml
           if-no-files-found: warn
 
   hardware:
     name: HCU runtime and Qwen MP
     needs: [config, wheel]
-    runs-on: ${{ needs.config.outputs.runner }}
+    if: github.run_attempt == '1'
+    runs-on: hygon-bw1100-8card
     container:
       image: ${{ needs.config.outputs.image }}
     timeout-minutes: 100
     env:
       # No registry credentials, shared user home, Docker socket or host mounts.
       # The ARC scale set supplies HCU devices and a read-only model volume.
-      QWEN_MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL || '/models/Qwen/Qwen3-8B' }}
-      TEST_TP: ${{ vars.LMCACHE_V056_TP || '8' }}
+      QWEN_MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL }}
+      TEST_TP: '8'
       HF_HUB_OFFLINE: '1'
       TRANSFORMERS_OFFLINE: '1'
       PYTHONNOUSERSITE: '1'
@@ -110,7 +138,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.config.outputs.merge }}
           path: candidate
           persist-credentials: false
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -129,6 +157,7 @@ jobs:
       - name: Validate environment, install upstream and the same PR wheel, run tests
         env:
           CONTROLLER_SHA: ${{ github.event.pull_request.base.sha }}
+          TEST_SHA: ${{ needs.config.outputs.merge }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash "$GITHUB_WORKSPACE/controller/ci/hcu_v056/hardware.sh"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -141,9 +170,9 @@ jobs:
 
   result:
     name: hcu-tests
-    if: ${{ always() }}
+    if: ${{ always() && needs.config.result != 'skipped' && github.run_attempt == '1' }}
     needs: [config, wheel, hardware]
-    runs-on: ubuntu-latest
+    runs-on: hygon-cpu
     timeout-minutes: 3
     steps:
       - name: Require all jobs, including the real HCU job
