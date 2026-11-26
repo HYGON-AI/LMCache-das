@@ -1,0 +1,156 @@
+name: LMCache 0.5.6 HCU
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  config:
+    name: resolve HCU runner and image
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.config.outputs.runner }}
+      image: ${{ steps.config.outputs.image }}
+    steps:
+      - name: Check trusted event and infrastructure variables
+        id: config
+        env:
+          RUNNER_LABEL: ${{ vars.LMCACHE_HCU_RUNNER_LABEL }}
+          CI_IMAGE: ${{ vars.LMCACHE_V056_CI_IMAGE }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT" == pull_request && "$GITHUB_REPOSITORY" == HYGON-AI/LMCache-das && "$BASE" == v0.5.6_dev ]]
+          [[ "$RUNNER_LABEL" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$ ]] || { echo "::error::Set LMCACHE_HCU_RUNNER_LABEL to the isolated K8s HCU scale-set label"; exit 1; }
+          case "${RUNNER_LABEL,,}" in ubuntu-*|windows-*|macos-*|self-hosted|hygon-build|nmz1|nmz2|nmz3|nmz4|nmz6) echo "::error::Use a dedicated HCU pool, not a hosted, build-only or legacy host label"; exit 1;; esac
+          [[ "$CI_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Set LMCACHE_V056_CI_IMAGE to the reviewed vLLM 0.28.1 HCU image by digest"; exit 1; }
+          printf 'runner=%s\nimage=%s\n' "$RUNNER_LABEL" "$CI_IMAGE" >> "$GITHUB_OUTPUT"
+
+  wheel:
+    name: build wheel and test overlay (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Build the event's merge SHA only once; test its installed wheel
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          src="$GITHUB_WORKSPACE/candidate"
+          ci="$GITHUB_WORKSPACE/controller/ci/hcu_v056"
+          [[ "$(git -C "$src" rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(git -C "$src" show -s --format=%P HEAD)" == "$BASE_SHA $HEAD_SHA" ]]
+          python -m pip install 'setuptools==80.9.0' 'wheel==0.45.1' 'pytest==8.4.2'
+          mkdir dist
+          python -m pip wheel --no-build-isolation --no-deps "$src" -w dist
+          python -I "$ci/wheel.py" record dist "$GITHUB_SHA"
+          python -m pip install --no-index --no-deps --force-reinstall dist/*.whl
+          python -I -m pytest -q --import-mode=importlib "$ci/test_overlay.py" "$ci/test_contract.py" --junitxml=overlay.xml
+          python -I "$ci/report.py" overlay.xml --require test_installed_wheel test_cli_modes test_patch_roundtrip test_wheel_identity test_external_counter
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: upload
+        with:
+          name: lmcache-hcu-v056-wheel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: lmcache-v056-cpu-junit-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/overlay.xml
+          if-no-files-found: warn
+
+  hardware:
+    name: HCU runtime and Qwen MP
+    needs: [config, wheel]
+    runs-on: ${{ needs.config.outputs.runner }}
+    container:
+      image: ${{ needs.config.outputs.image }}
+    timeout-minutes: 100
+    env:
+      # No registry credentials, shared user home, Docker socket or host mounts.
+      # The ARC scale set supplies HCU devices and a read-only model volume.
+      QWEN_MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL || '/models/Qwen/Qwen3-8B' }}
+      TEST_TP: ${{ vars.LMCACHE_V056_TP || '8' }}
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      PYTHONNOUSERSITE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: LMCache/LMCache
+          # Make the version tag available to setuptools-scm; hardware.sh
+          # rejects it if it does not resolve to the pinned commit.
+          ref: refs/tags/v0.5.6
+          path: upstream
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.wheel.outputs.artifact }}
+          merge-multiple: true
+          path: job-data/overlay-wheel
+      - name: Validate environment, install upstream and the same PR wheel, run tests
+        env:
+          CONTROLLER_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash "$GITHUB_WORKSPACE/controller/ci/hcu_v056/hardware.sh"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: lmcache-v056-hcu-reports-${{ github.run_attempt }}
+          path: job-data/reports/
+          if-no-files-found: warn
+          retention-days: 7
+
+  result:
+    name: hcu-tests
+    if: ${{ always() }}
+    needs: [config, wheel, hardware]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require all jobs, including the real HCU job
+        env:
+          CONFIG: ${{ needs.config.result }}
+          WHEEL: ${{ needs.wheel.result }}
+          HCU: ${{ needs.hardware.result }}
+        run: |
+          printf 'config=%s wheel=%s hcu=%s\n' "$CONFIG" "$WHEEL" "$HCU"
+          [[ "$CONFIG" == success && "$WHEEL" == success && "$HCU" == success ]]

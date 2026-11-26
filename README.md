@@ -23,6 +23,9 @@ Please ensure your environment matches the versions below.
 | :--- | :--- | :--- |
 | **v0.5.6** | **v0.5.6** | **v0.28.1** |
 
+For the `v0.5.6_dev` pull request checks, K8s runner label, required image,
+and first-run instructions, see [HCU PR CI](ci/hcu_v056/README.md).
+
 ## Design
 
 There are two patch layers:
