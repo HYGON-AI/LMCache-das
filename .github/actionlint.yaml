@@ -1,2 +1,2 @@
 self-hosted-runner:
-  labels: [hygon-cpu, hygon-build, hygon-bw1100-1card, hygon-bw1100-2card]
+  labels: [hygon-cpu, hygon-build, hygon-bw1100-1card, hygon-bw1100-2card, hygon-bw1100-8card]

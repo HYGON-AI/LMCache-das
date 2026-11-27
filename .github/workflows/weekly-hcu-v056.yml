@@ -1,0 +1,124 @@
+name: LMCache 0.5.6 HCU Weekly
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * 0"
+permissions:
+  contents: read
+concurrency:
+  group: lmcache-v056-weekly
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    if: >-
+      github.repository == 'HYGON-AI/LMCache-das' &&
+      ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/v0.5.6_dev'))
+    runs-on: hygon-build
+    timeout-minutes: 20
+    container:
+      image: &image 42.228.13.241:5000/hcu/base_env/vllm@sha256:dddc90925d5562c930ee875b526ff51b39ac1c4a41e7374b85d70ec1d7b7bc7c
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      wheel: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || 'refs/heads/v0.5.6_dev' }}
+          persist-credentials: false
+      - id: source
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          bash ci/hcu_v056/check-pod.sh
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/build"
+          source "$RUNNER_TEMP/build/bin/activate"
+          python -m pip wheel --no-index --no-deps --no-build-isolation . -w "$RUNNER_TEMP/wheel"
+          python -I ci/hcu_v056/wheel.py record "$RUNNER_TEMP/wheel" "$sha"
+          python -m pip install --no-index --no-deps --ignore-installed "$RUNNER_TEMP"/wheel/*.whl
+          python -I -m pytest -q --import-mode=importlib ci/hcu_v056/test_{overlay,contract}.py --junitxml="$RUNNER_TEMP/overlay.xml"
+          python -I ci/hcu_v056/report.py "$RUNNER_TEMP/overlay.xml" --require test_installed_wheel test_cli_modes test_patch_roundtrip test_wheel_identity test_external_counter
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: weekly-wheel-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wheel
+          if-no-files-found: error
+      - name: Check six weekly contracts before reserving model GPUs
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/build/bin/activate"
+          man=ci/hcu/model-test-manifest.json
+          archive=$(python -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["archive"])' "$man")
+          python -I ci/hcu/model-ci.py extract-tool --manifest "$man" --archive "$archive" --output "$RUNNER_TEMP/weekly-tool"
+          python -I ci/hcu_v056/weekly_preflight.py "$man" "$RUNNER_TEMP/weekly-tool" "$RUNNER_TEMP/weekly-preflight.json"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: weekly-preflight-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/overlay.xml
+            ${{ runner.temp }}/weekly-preflight.json
+  framework:
+    needs: build
+    # A model dependency failure must not suppress the separate business tests.
+    if: ${{ !cancelled() && needs.build.outputs.wheel != '' && needs.build.outputs.sha != '' }}
+    runs-on: hygon-bw1100-1card
+    timeout-minutes: 90
+    container:
+      image: *image
+    env:
+      HCU_SUITE: unit
+      TEST_TP: "1"
+      CONTROLLER_SHA: ${{ needs.build.outputs.sha }}
+      HEAD_SHA: ${{ needs.build.outputs.sha }}
+      TEST_SHA: ${{ needs.build.outputs.sha }}
+    steps: &run_suite
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          path: controller
+          persist-credentials: false
+      - run: ln -s "$GITHUB_WORKSPACE/controller" "$GITHUB_WORKSPACE/candidate"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.wheel }}
+          merge-multiple: true
+          path: job-data/overlay-wheel
+      - run: bash "$GITHUB_WORKSPACE/controller/ci/hcu_v056/hardware.sh"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: weekly-${{ env.HCU_SUITE }}-${{ github.run_attempt }}
+          path: job-data/reports
+          if-no-files-found: error
+  models:
+    needs: [build, framework]
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - {suite: weekly-qwen-cpu, cards: 2, runner: hygon-bw1100-2card}
+          - {suite: weekly-qwen-localdisk, cards: 2, runner: hygon-bw1100-2card}
+          - {suite: weekly-qwen-posix, cards: 2, runner: hygon-bw1100-2card}
+          - {suite: weekly-deepseek-cpu, cards: 8, runner: hygon-bw1100-8card}
+          - {suite: weekly-deepseek-localdisk, cards: 8, runner: hygon-bw1100-8card}
+          - {suite: weekly-deepseek-posix, cards: 8, runner: hygon-bw1100-8card}
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: *image
+    timeout-minutes: 360
+    env:
+      HCU_SUITE: ${{ matrix.suite }}
+      TEST_TP: ${{ matrix.cards }}
+      CONTROLLER_SHA: ${{ needs.build.outputs.sha }}
+      HEAD_SHA: ${{ needs.build.outputs.sha }}
+      TEST_SHA: ${{ needs.build.outputs.sha }}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps: *run_suite

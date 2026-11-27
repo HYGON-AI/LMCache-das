@@ -10,8 +10,8 @@ revision() { git -c safe.directory="$1" -C "$1" rev-parse HEAD; }
 [[ "$(revision "$root/controller")" == "$CONTROLLER_SHA" ]]
 [[ "$(revision "$root/candidate")" == "$TEST_SHA" ]]
 case "${HCU_SUITE:?}:${TEST_TP:?}" in
-    unit:1|qwen:2) ;;
-    *) echo "::error::Expected unit:1 or qwen:2"; exit 1 ;;
+    unit:1|qwen:2|weekly-qwen-cpu:2|weekly-qwen-localdisk:2|weekly-qwen-posix:2|weekly-deepseek-cpu:8|weekly-deepseek-localdisk:8|weekly-deepseek-posix:8) ;;
+    *) echo "::error::Invalid HCU suite/TP combination"; exit 1 ;;
 esac
 printf 'controller=%s\npr_head=%s\nmerge=%s\n' "$CONTROLLER_SHA" "$HEAD_SHA" "$TEST_SHA" > "$out/revisions.txt"
 
@@ -51,7 +51,19 @@ if [[ "$HCU_SUITE" == unit ]]; then
     LMCACHEPATH="$(python -I "$ci/upstream.py" /ci_public/lmcache-das/assets/upstream/lmcache-0.5.6-3e11e108.tar.gz "$RUNNER_TEMP/upstream-fixtures")"
     export LMCACHEPATH
     python -I "$ci/regression.py" "$root/candidate" "$root/controller" "$RUNNER_TEMP" "$out"
-else
+elif [[ "$HCU_SUITE" == qwen ]]; then
     python -I -m pytest -q --import-mode=importlib "$ci/test_qwen_mp.py" --junitxml="$out/qwen-mp.xml"
     python -I "$ci/report.py" "$out/qwen-mp.xml" --require test_qwen_mp_cache_reuse
+else
+    legacy="$root/controller/ci/hcu"
+    tool="$RUNNER_TEMP/weekly-tool"
+    manifest="$legacy/model-test-manifest.json"
+    archive="$(python -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["archive"])' "$manifest")"
+    python -I "$legacy/model-ci.py" extract-tool --manifest "$manifest" --archive "$archive" --output "$tool"
+    # These must be private writable volumes, not shared model/dataset mounts.
+    for path in /sandbox /local_disk; do
+        mountpoint -q "$path" && [[ -w "$path" ]] || { echo "Missing private writable mount: $path"; exit 1; }
+    done
+    python -I "$legacy/model-ci.py" run --manifest "$manifest" --tool "$tool" \
+        --profile "$HCU_SUITE" --runner "${RUNNER_NAME:-isolated-trial}" --repeat 1 --output "$out"
 fi

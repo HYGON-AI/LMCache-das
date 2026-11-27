@@ -591,7 +591,7 @@ def prepare_opencompass_conda_shim(tool_root, opencompass_dir):
         raise ModelCIError("the CMMLU OpenCompass runtime is incomplete")
     shim = tool_root / ".runtime" / "miniconda3" / "bin" / "conda"
     shim.parent.mkdir(parents=True, exist_ok=True)
-    interpreter = shlex.quote(str(Path(sys.executable).resolve()))
+    interpreter = shlex.quote(sys.executable)  # keep the venv, not its system-Python symlink target
     source_root = shlex.quote(str(opencompass_dir))
     run_py = shlex.quote(str(opencompass_dir / "run.py"))
     shim.write_text(
@@ -642,7 +642,7 @@ esac
     return {
         "kind": "offline-conda-run-shim",
         "path": str(shim),
-        "python": str(Path(sys.executable).resolve()),
+        "python": sys.executable,
         "opencompass": str(opencompass_dir),
     }
 

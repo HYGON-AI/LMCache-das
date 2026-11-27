@@ -15,6 +15,7 @@ def run(candidate, controller, temporary, reports):
     sys.path.insert(0, str(suite))  # only the tests/ package lives here
     root = suite / "tests"
     baseline = json.loads((controller / "ci/hcu/test-baseline.json").read_text())
+    expected = set(json.loads((controller / "ci/hcu_v056/business-nodeids.json").read_text()))
     disabled = {row["nodeid"] for row in json.loads(
         (controller / "ci/hcu/disabled-tests.json").read_text())["tests"]}
 
@@ -31,8 +32,8 @@ def run(candidate, controller, temporary, reports):
             self.problems = [f"{file}::{name}" for file, names in
                              baseline["required_test_definitions"].items() for name in names
                              if (file.removeprefix("tests/"), name) not in definitions]
-            self.problems += sorted(disabled - set(ids))
-            if len(ids) < 159 or len(set(ids)) != len(ids):
+            self.problems += sorted((expected | disabled) - set(ids))
+            if len(expected) != 159 or len(ids) < 159 or len(set(ids)) != len(ids):
                 self.problems.append(f"expected at least 159 unique business cases, collected {len(ids)}")
             omitted = [i for i in items if i.nodeid in disabled]
             items[:] = [i for i in items if i.nodeid not in disabled]

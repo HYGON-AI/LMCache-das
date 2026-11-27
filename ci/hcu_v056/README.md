@@ -24,4 +24,12 @@ Qwen 默认只读目录是 `/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B`�
 
 固定 [LMCache v0.5.6 的 commit 源码包](https://codeload.github.com/LMCache/LMCache/tar.gz/3e11e10812b448142c6cdb177a3058652bd826fa)，SHA256 为 `6cbc61020b30609edec743a6c81c0a7ed91f1b5c081bbc513d75d0a01ee5b75e`。在维护节点执行 `bash ci/hcu_v056/stage-upstream.sh /path/to/lmcache-0.5.6-3e11e108.tar.gz`。脚本校验后原子发布，不覆盖旧文件；同内容可重复执行。目标为 `/ci_public/lmcache-das/assets/upstream/lmcache-0.5.6-3e11e108.tar.gz`。
 
-该源码包用于留档或单独的源构建验证。日常 PR 不挂这个包、不编上游、不安装 grpcio-tools；直接使用锁定镜像中已经编译好的 `lmcache 0.5.6+dtk2610.torch2110.2610221358.g3e11e1`。先核对版本和原生扩展，再把已安装的模块复制到作业私有 venv，避免补丁 CLI 写到镜像基础环境。PR 的 HCU 适配 wheel 由 build job 编一次，单测和模型共用。运行用户须能在容器内解析到用户名；不需要 root，也不应挂宿主机的 /etc/passwd。
+单卡业务测试需要只读挂载上述源码包，校验后只导入其测试夹具；不重新编上游、不安装 grpcio-tools。运行时和模型均使用锁定镜像里已编译好的 `lmcache 0.5.6+dtk2610.torch2110.2610221358.g3e11e1`。先核对版本和原生扩展，再把已安装的模块复制到作业私有 venv，避免补丁 CLI 写到镜像基础环境。HCU 适配 wheel 每轮编一次。运行用户须能在容器内解析到用户名；不需要 root，也不应挂宿主机的 /etc/passwd。
+
+## 业务回归与 weekly
+
+业务测试来自 main 的 `39ee5c23`，以前的 159 个参数化 node ID 列在 `business-nodeids.json`。要求全部收集，只排除历史批准的 4 个精确 ID，其余全部实际运行；允许新增测试，不允许少收集、跳过或用 smoke 代替。单独产出 `business-inventory.json`、`business-selection.json` 和 `business.xml`；收集错误同样使 CI 失败。
+
+Weekly 单独使用 `weekly-hcu-v056.yml`，不监听 PR。仅在受保护的 `v0.5.6_dev` 上手动运行；定时或手动入口需在默认分支注册，定时始终检出版本分支并将解析到的 SHA 固定给全部 job。只允许受信 workflow 使用相应 ARC 池。六组测试沿用 main 的工作量：Qwen3-8B（2 卡）、DeepSeek-R1-W4A8（8 卡），各自测 CPU、LocalDisk、POSIX；每组测长文与 CMMLU，磁盘两组另测 OpenCompass（HumanEval、GSM8K）。不使用双卡 MP smoke 代替精度测试。
+
+构建池需要只读的固定工具包；单卡池需要上游 fixtures 包；weekly 模型池还需要按 `ci/hcu/model-test-manifest.json` 的容器路径只读挂载相应模型、评测数据和审核过的 OpenCompass 环境，提供独占的 `/sandbox`、大盘 `/local_disk` 及评测依赖。预检失败会列出每个场景缺少什么，不启动模型。只有单测与预检均通过才调度模型池。
