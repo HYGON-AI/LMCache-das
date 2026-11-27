@@ -3,7 +3,7 @@ name: LMCache HCU PR
 on:
   pull_request_target:
     branches: [main, v0.3.13_dev]
-    types: [opened, synchronize, reopened]
+    types: [labeled]
 
 permissions:
   contents: read
@@ -15,6 +15,7 @@ concurrency:
 jobs:
   framework:
     name: framework-and-pytest
+    if: github.event.label.name == 'ci-hcu'
     uses: ./.github/workflows/ci-hcu-reusable.yml
     with:
       controller_ref: ${{ github.event.pull_request.base.sha }}
@@ -75,6 +76,7 @@ jobs:
       ${{
         always() &&
         !cancelled() &&
+        github.event.label.name == 'ci-hcu' &&
         vars.LMCACHE_HCU_CI_ENABLED == 'true' &&
         vars.LMCACHE_HCU_RUNNER_ISOLATED == 'true'
       }}
@@ -95,3 +97,23 @@ jobs:
           fi
           [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           printf 'Source SHA: `%s`\n' "${SOURCE_SHA}" >>"${GITHUB_STEP_SUMMARY}"
+
+  cleanup-label:
+    name: Cleanup CI label
+    if: ${{ always() && github.event.label.name == 'ci-hcu' }}
+    needs: [framework, model-tests, aggregate]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Remove ci-hcu label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          status=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/labels/ci-hcu")
+          [[ "${status}" == 200 || "${status}" == 404 ]]
