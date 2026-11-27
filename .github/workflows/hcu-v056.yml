@@ -49,7 +49,7 @@ jobs:
         env:
           IMAGE_TAG: 42.228.13.241:5000/hcu/base_env/vllm:0.28.1-ubuntu22.04-dtk2610-py3.12-sf_b075-20261114-1013
           IMAGE_DIGEST: sha256:dddc90925d5562c930ee875b526ff51b39ac1c4a41e7374b85d70ec1d7b7bc7c
-          MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL }}
+          MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL || '/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B' }}
         run: |
           set -euo pipefail
           [[ "$MODEL" == /public/* || "$MODEL" == /public4/* ]] || { echo "::error::Set LMCACHE_V056_QWEN_MODEL to the read-only Qwen3-8B path"; exit 1; }
@@ -131,7 +131,7 @@ jobs:
     env:
       # No registry credentials, shared user home, Docker socket or host mounts.
       # The ARC scale set supplies HCU devices and a read-only model volume.
-      QWEN_MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL }}
+      QWEN_MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL || '/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B' }}
       TEST_TP: ${{ matrix.cards }}
       HCU_SUITE: ${{ matrix.suite }}
       HF_HUB_OFFLINE: '1'
