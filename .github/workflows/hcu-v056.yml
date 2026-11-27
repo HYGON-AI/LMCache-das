@@ -153,7 +153,7 @@ jobs:
           artifact-ids: ${{ needs.wheel.outputs.artifact }}
           merge-multiple: true
           path: job-data/overlay-wheel
-      - name: Validate environment, install upstream and the same PR wheel, run tests
+      - name: Validate image upstream, install the approved PR wheel and run tests
         env:
           CONTROLLER_SHA: ${{ github.event.pull_request.base.sha }}
           TEST_SHA: ${{ needs.config.outputs.merge }}

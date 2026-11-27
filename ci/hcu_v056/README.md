@@ -16,7 +16,7 @@
 Qwen 默认只读目录是 `/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B`；平台挂载路径不同时才需设置 `LMCACHE_V056_QWEN_MODEL` 覆盖。
 
 1. 将受信的可复用工作流 `.github/workflows/hcu-v056.yml` 及 `ci/hcu_v056/` 合入 **`v0.5.6_dev`**。将本分支的薄入口 `.github/workflows/pr-test-hcu-v056.yml` 单独审查、同步至受保护的**默认分支 main**；它只匹配 `v0.5.6_dev`。仅推送提案分支不会启用此入口。参考 [GitHub 的 pull_request_target 事件说明](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target)。
-2. 镜像已在 workflow 中固定为 `42.228.13.241:5000/hcu/base_env/vllm:0.28.1-ubuntu22.04-dtk2610-py3.12-sf_b075-20261114-1013@sha256:dddc90925d5562c930ee875b526ff51b39ac1c4a41e7374b85d70ec1d7b7bc7c`；不需要镜像变量。仓库变量 `LMCACHE_V056_QWEN_MODEL` 填平台只读挂载的 Qwen3-8B 实际目录。容器需包含 vLLM 0.28.1、HIP PyTorch、DTK/hipcc、Python 3.12、venv、findmnt、上游编译依赖及 pytest。由 kubelet/CRI 拉取，不在 job 内拉镜像或启动 Docker。若节点仅能通过 HTTP 访问该 registry，由平台检查目标节点的 CRI registry endpoint/镜像拉取策略；需要凭据时使用平台预配的 imagePullSecrets，勿写进仓库。手工 docker pull 不代表 K8s 已缓存镜像。
+2. 固定镜像 `42.228.13.241:5000/hcu/base_env/vllm:0.28.1-ubuntu22.04-dtk2610-py3.12-sf_b075-20261114-1013@sha256:dddc90925d5562c930ee875b526ff51b39ac1c4a41e7374b85d70ec1d7b7bc7c` 自带匹配的 vLLM、HIP PyTorch 和已编译的 LMCache。由 kubelet/CRI 拉取，不在 job 内启动 Docker；若需要认证，使用平台预配的 imagePullSecrets。模型目录使用只读挂载。
 3. 只有在组织确认这几个池对公开 PR 隔离后才启用。所有容器均不得暴露用户家目录（即使只读）、生产凭据、宿主套接字或他人可写的任务缓存。挂载由平台配置；若 Pod 能看到共享 home，流水线会拒绝执行 PR 代码，请平台调整隔离，不要关闭检查。构建产物在 jobs 间用 Actions artifact 传递。
 4. 保护默认分支、版本分支和 CI 代码；runner group 限制到受信的 `HYGON-AI/LMCache-das/.github/workflows/hcu-v056.yml@refs/heads/v0.5.6_dev`，不能只靠 label 控制谁能使用集群。若仓库其他 workflows 仍自动监听 PR，它们不受本入口控制。确认没有需要关闭的旁路后，用新的目标分支 PR 验证“不打标不运行、贴 runci 仅测本次 SHA、新 push 不继承批准”。不要把标签审批或默认分支的 check 当作 PR head 已成功通过硬件测试。
 
