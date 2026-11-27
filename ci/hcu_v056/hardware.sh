@@ -45,8 +45,12 @@ cleanup() {
 trap cleanup EXIT
 "$cli" --mode install
 if [[ "$HCU_SUITE" == unit ]]; then
-    python -I -m pytest -q --import-mode=importlib "$ci/test_device.py" "$root/candidate/tests" --junitxml="$out/hcu.xml"
+    python -I -m pytest -q --import-mode=importlib "$ci/test_device.py" --junitxml="$out/hcu.xml"
     python -I "$ci/report.py" "$out/hcu.xml" --require test_hip_allocation test_mp_connector
+    # Only use the exact source archive for its test fixtures. Never rebuild lmcache.
+    LMCACHEPATH="$(python -I "$ci/upstream.py" /ci_public/lmcache-das/assets/upstream/lmcache-0.5.6-3e11e108.tar.gz "$RUNNER_TEMP/upstream-fixtures")"
+    export LMCACHEPATH
+    python -I "$ci/regression.py" "$root/candidate" "$root/controller" "$RUNNER_TEMP" "$out"
 else
     python -I -m pytest -q --import-mode=importlib "$ci/test_qwen_mp.py" --junitxml="$out/qwen-mp.xml"
     python -I "$ci/report.py" "$out/qwen-mp.xml" --require test_qwen_mp_cache_reuse
