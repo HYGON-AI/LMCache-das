@@ -24,4 +24,4 @@ Qwen 默认只读目录是 `/public/opendas/DL_DATA/llm-models/qwen3/Qwen3-8B`�
 
 固定 [LMCache v0.5.6 的 commit 源码包](https://codeload.github.com/LMCache/LMCache/tar.gz/3e11e10812b448142c6cdb177a3058652bd826fa)，SHA256 为 `6cbc61020b30609edec743a6c81c0a7ed91f1b5c081bbc513d75d0a01ee5b75e`。在维护节点执行 `bash ci/hcu_v056/stage-upstream.sh /path/to/lmcache-0.5.6-3e11e108.tar.gz`。脚本校验后原子发布，不覆盖旧文件；同内容可重复执行。目标为 `/ci_public/lmcache-das/assets/upstream/lmcache-0.5.6-3e11e108.tar.gz`。
 
-平台只需将这个文件或专用目录**只读**挂给两类硬件 Pod，不需要挂整个可写共享盘。每个 Pod 核对可见卡数，复制上游包至私有临时区并校验 SHA，在本镜像内按实际 HCU 架构编译安装；PR overlay wheel 则由 build job 编一次、两边共用。单卡或两卡不足时等待调度，不自动占别的卡，不降级跳测。源包缺失、哈希错误或挂载可写都报错。
+该源码包用于留档或单独的源构建验证。日常 PR 不挂这个包、不编上游、不安装 grpcio-tools；直接使用锁定镜像中已经编译好的 `lmcache 0.5.6+dtk2610.torch2110.2610221358.g3e11e1`。先核对版本和原生扩展，再把已安装的模块复制到作业私有 venv，避免补丁 CLI 写到镜像基础环境。PR 的 HCU 适配 wheel 由 build job 编一次，单测和模型共用。运行用户须能在容器内解析到用户名；不需要 root，也不应挂宿主机的 /etc/passwd。
