@@ -47,13 +47,13 @@ jobs:
       - name: Check trusted event and infrastructure variables
         id: config
         env:
-          CI_IMAGE: ${{ vars.LMCACHE_V056_CI_IMAGE }}
+          IMAGE_TAG: 42.228.13.241:5000/hcu/base_env/vllm:0.28.1-ubuntu22.04-dtk2610-py3.12-sf_b075-20261114-1013
+          IMAGE_DIGEST: sha256:dddc90925d5562c930ee875b526ff51b39ac1c4a41e7374b85d70ec1d7b7bc7c
           MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL }}
         run: |
           set -euo pipefail
           [[ "$MODEL" == /public/* || "$MODEL" == /public4/* ]] || { echo "::error::Set LMCACHE_V056_QWEN_MODEL to the read-only Qwen3-8B path"; exit 1; }
-          [[ "$CI_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Set LMCACHE_V056_CI_IMAGE to the reviewed vLLM 0.28.1 HCU image by digest"; exit 1; }
-          printf 'image=%s\n' "$CI_IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'image=%s@%s\n' "$IMAGE_TAG" "$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
 
   wheel:
     name: build wheel and test overlay (CPU)
@@ -115,10 +115,16 @@ jobs:
           if-no-files-found: warn
 
   hardware:
-    name: HCU runtime and Qwen MP
+    name: HCU ${{ matrix.suite }} (${{ matrix.cards }} cards)
     needs: [config, wheel]
     if: github.run_attempt == '1'
-    runs-on: hygon-bw1100-8card
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {suite: unit, cards: 1, runner: hygon-bw1100-1card}
+          - {suite: qwen, cards: 2, runner: hygon-bw1100-2card}
+    runs-on: ${{ matrix.runner }}
     container:
       image: ${{ needs.config.outputs.image }}
     timeout-minutes: 100
@@ -126,7 +132,8 @@ jobs:
       # No registry credentials, shared user home, Docker socket or host mounts.
       # The ARC scale set supplies HCU devices and a read-only model volume.
       QWEN_MODEL: ${{ vars.LMCACHE_V056_QWEN_MODEL }}
-      TEST_TP: '8'
+      TEST_TP: ${{ matrix.cards }}
+      HCU_SUITE: ${{ matrix.suite }}
       HF_HUB_OFFLINE: '1'
       TRANSFORMERS_OFFLINE: '1'
       PYTHONNOUSERSITE: '1'
@@ -140,14 +147,6 @@ jobs:
         with:
           ref: ${{ needs.config.outputs.merge }}
           path: candidate
-          persist-credentials: false
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: LMCache/LMCache
-          # Make the version tag available to setuptools-scm; hardware.sh
-          # rejects it if it does not resolve to the pinned commit.
-          ref: refs/tags/v0.5.6
-          path: upstream
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -163,7 +162,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:
-          name: lmcache-v056-hcu-reports-${{ github.run_attempt }}
+          name: lmcache-v056-${{ matrix.suite }}-reports-${{ github.run_attempt }}
           path: job-data/reports/
           if-no-files-found: warn
           retention-days: 7
